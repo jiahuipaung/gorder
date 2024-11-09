@@ -1,20 +1,35 @@
 package main
 
 import (
+	"context"
+	"github.com/jiahuipaung/gorder/common/config"
 	"github.com/jiahuipaung/gorder/common/genproto/stockpb"
 	"github.com/jiahuipaung/gorder/common/server"
+	"github.com/jiahuipaung/gorder/stock/ports"
+	"github.com/jiahuipaung/gorder/stock/service"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
-	"stock/ports"
 )
 
+func init() {
+	if err := config.NewViperConfig(); err != nil {
+		logrus.Fatal(err)
+	}
+}
+
 func main() {
-	serviceName := viper.GetString("stock.service-name")
-	serviceType := viper.GetString("stock.server-to-run")
+	serviceName := viper.Sub("stock").GetString("service-name")
+	serviceType := viper.Sub("stock").GetString("server-to-run")
+
+	ctx, cancel := context.WithCancel(context.Background()) // 用于超时退出
+	defer cancel()
+	application := service.NewApplication(ctx)
+
 	switch serviceType {
 	case "grpc":
 		server.RunGRPCServer(serviceName, func(s *grpc.Server) {
-			svc := ports.NewGRPCServer()
+			svc := ports.NewGRPCServer(application)
 			stockpb.RegisterStockServiceServer(s, svc)
 		})
 	case "http":
