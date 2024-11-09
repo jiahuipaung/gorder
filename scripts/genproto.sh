@@ -16,14 +16,15 @@ API_ROOT="./api"
 function dirs {
     dirs=()
     while IFS= read -r dir; do
-        dirs+="$dir"
+        dirs+=("$dir")
     done < <(find . -type f -name "*.proto" -exec dirname {} \; | xargs -n1 basename | sort -u)
     echo "${dirs[@]}"
 }
 
 function pb_files {
-    pb_files=$(find . -type f -name "*.proto")
-    echo "${pb_files[@]}"
+  dirs=()
+  pb_files=$(find . -type f -name "*.proto")
+  echo "${pb_files[@]}"
 }
 
 function gen_for_modules() {
