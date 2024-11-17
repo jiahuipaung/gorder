@@ -7,6 +7,9 @@ import (
 
 func RunHTTPServer(serviceName string, wrapper func(router *gin.Engine)) {
 	addr := viper.Sub(serviceName).GetString("http-addr")
+	if addr == "" {
+		//	TODO: Waring log
+	}
 	RunHTTPServerOnAddr(addr, wrapper)
 }
 

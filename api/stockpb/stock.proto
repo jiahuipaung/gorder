@@ -11,7 +11,7 @@ service StockService {
 }
 
 message GetItemsRequest {
-  repeated string ItemID = 1;
+  repeated string ItemIDs = 1;
 }
 
 message GetItemsResponse {

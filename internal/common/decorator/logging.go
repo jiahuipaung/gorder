@@ -14,8 +14,8 @@ type queryLoggingDecorator[C, R any] struct {
 
 func (q queryLoggingDecorator[C, R]) Handler(ctx context.Context, cmd C) (result R, err error) {
 	logger := q.logger.WithFields(logrus.Fields{
-		"cmd":      generateActionName(cmd),
-		"cmd_body": fmt.Sprintf("%v", cmd),
+		"query":      generateActionName(cmd),
+		"query_body": fmt.Sprintf("%#v", cmd),
 	})
 	logger.Debug("Executing query")
 	defer func() {

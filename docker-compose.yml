@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  consul:
+    image: hashicorp/consul
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -node=server-1
+    ports:
+      - "8500:8500"       # HTTP API 和 Consul UI
+      - "8600:8600/udp"   # DNS 查询
+
+  rabbit-mq:
+    image: "rabbitmq:3-management"
+    ports:
+      - "15672:15672"
+      - "5672:5672"

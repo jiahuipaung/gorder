@@ -32,7 +32,8 @@ message Order {
   string ID = 1;
   string CustomerID = 2;
   string Status = 3;
-  repeated Item Items = 4;
+  string PaymentLink = 4;
+  repeated Item Items = 5;
 }
 
 message GetOrderRequest {

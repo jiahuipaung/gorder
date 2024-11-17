@@ -26,7 +26,7 @@ func NewUpdateOrderHandler(
 	if orderRepo == nil {
 		panic("orderRepo is nil")
 	}
-	return decorator.ApplyCommandHandler[UpdateOrder, interface{}](
+	return decorator.ApplyCommandDecorators[UpdateOrder, interface{}](
 		updateOrderHandler{orderRepo: orderRepo},
 		logger,
 		metricsClient,
