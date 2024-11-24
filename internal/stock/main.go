@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"github.com/jiahuipaung/gorder/common/tracing"
+
 	"github.com/jiahuipaung/gorder/common/config"
 	"github.com/jiahuipaung/gorder/common/discovery"
 	"github.com/jiahuipaung/gorder/common/genproto/stockpb"
@@ -27,6 +29,15 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background()) // 用于超时退出
 	defer cancel()
+
+	shutdown, err := tracing.InitJaegerProvider(viper.Sub("jaeger").GetString("url"), serviceName)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	defer func() {
+		_ = shutdown(ctx)
+	}()
+
 	application := service.NewApplication(ctx)
 	deRegisterFunc, err := discovery.RegisterToConsul(ctx, serviceName)
 	if err != nil {

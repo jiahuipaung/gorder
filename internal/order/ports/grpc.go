@@ -2,6 +2,8 @@ package ports
 
 import (
 	"context"
+	"order/convertor"
+
 	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
 	"github.com/jiahuipaung/gorder/order/app"
 	"github.com/jiahuipaung/gorder/order/app/command"
@@ -24,7 +26,7 @@ func NewGRPCServer(app app.Application) *GRPCServer {
 func (G GRPCServer) CreateOrder(ctx context.Context, request *orderpb.CreateOrderRequest) (*emptypb.Empty, error) {
 	_, err := G.app.Commands.CreateOrder.Handler(ctx, command.CreateOrder{
 		CustomerID: request.CustomerID,
-		Items:      request.Items,
+		Items:      convertor.NewItemWithQuantityConverter().ProtoToEntities(request.Items),
 	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -41,7 +43,7 @@ func (G GRPCServer) GetOrder(ctx context.Context, request *orderpb.GetOrderReque
 	if err != nil {
 		return nil, status.Error(codes.NotFound, err.Error())
 	}
-	return o.ToProto(), nil
+	return convertor.NewOrderConverter().EntityToProto(o), nil
 }
 
 func (G GRPCServer) UpdateOrder(ctx context.Context, request *orderpb.Order) (_ *emptypb.Empty, err error) {
@@ -51,7 +53,7 @@ func (G GRPCServer) UpdateOrder(ctx context.Context, request *orderpb.Order) (_ 
 		request.ID,
 		request.Status,
 		request.PaymentLink,
-		request.Items)
+		convertor.NewItemConvertor().ProtoToEntities(request.Items))
 	if err != nil {
 		err = status.Error(codes.Internal, err.Error())
 		return

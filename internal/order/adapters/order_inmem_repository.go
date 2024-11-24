@@ -2,10 +2,11 @@ package adapters
 
 import (
 	"context"
+	"sync"
+
 	"github.com/google/uuid"
 	domain "github.com/jiahuipaung/gorder/order/domain/order"
 	"github.com/sirupsen/logrus"
-	"sync"
 )
 
 type MemoryOrderRepository struct {
@@ -70,7 +71,7 @@ func (m *MemoryOrderRepository) Update(ctx context.Context, o *domain.Order, upd
 	for i, order := range m.store {
 		if order.ID == o.ID && order.CustomerID == o.CustomerID {
 			found = true
-			updateOrder, err := updateFn(ctx, order)
+			updateOrder, err := updateFn(ctx, o)
 			if err != nil {
 				return err
 			}

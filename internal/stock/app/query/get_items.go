@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+
 	"github.com/jiahuipaung/gorder/common/decorator"
 	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
 	domain "github.com/jiahuipaung/gorder/stock/domain/stock"

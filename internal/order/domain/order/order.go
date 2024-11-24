@@ -2,18 +2,22 @@ package order
 
 import (
 	"errors"
-	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
+	"fmt"
+	"github.com/jiahuipaung/gorder/order/entity"
+
+	"github.com/stripe/stripe-go/v81"
 )
 
+// Aggregate聚合
 type Order struct {
 	ID          string
 	CustomerID  string
 	Status      string
 	PaymentLink string
-	Items       []*orderpb.Item
+	Items       []*entity.Item
 }
 
-func NewOrder(customerID, ID, status, paymentLink string, items []*orderpb.Item) (*Order, error) {
+func NewOrder(customerID, ID, status, paymentLink string, items []*entity.Item) (*Order, error) {
 	if customerID == "" {
 		return nil, errors.New("customerID is nil")
 	}
@@ -35,12 +39,9 @@ func NewOrder(customerID, ID, status, paymentLink string, items []*orderpb.Item)
 	}, nil
 }
 
-func (o *Order) ToProto() *orderpb.Order {
-	return &orderpb.Order{
-		ID:          o.ID,
-		CustomerID:  o.CustomerID,
-		Status:      o.Status,
-		PaymentLink: o.PaymentLink,
-		Items:       o.Items,
+func (o Order) IsPaid() error {
+	if o.Status == string(stripe.CheckoutSessionPaymentStatusPaid) {
+		return nil
 	}
+	return fmt.Errorf("order %s is not paid", o.ID)
 }

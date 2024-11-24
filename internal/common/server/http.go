@@ -1,24 +1,37 @@
 package server
 
 import (
+	"errors"
+	"github.com/jiahuipaung/gorder/common/middleware"
+	"github.com/sirupsen/logrus"
+
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
 func RunHTTPServer(serviceName string, wrapper func(router *gin.Engine)) {
 	addr := viper.Sub(serviceName).GetString("http-addr")
 	if addr == "" {
 		//	TODO: Waring log
+		panic(errors.New("http-addr can't be empty"))
 	}
 	RunHTTPServerOnAddr(addr, wrapper)
 }
 
 func RunHTTPServerOnAddr(addr string, wrapper func(router *gin.Engine)) {
 	apiRouter := gin.New()
+	setmiddlewares(apiRouter)
 	wrapper(apiRouter)
 	apiRouter.Group("/api")
 
 	if err := apiRouter.Run(addr); err != nil {
 		panic(err)
 	}
+}
+
+func setmiddlewares(r *gin.Engine) {
+	r.Use(middleware.StructuredLog(logrus.NewEntry(logrus.StandardLogger())))
+	r.Use(gin.Recovery())
+	r.Use(otelgin.Middleware("default_server"))
 }

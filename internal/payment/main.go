@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"github.com/jiahuipaung/gorder/common/tracing"
+
 	"github.com/jiahuipaung/gorder/common/broker"
 	"github.com/jiahuipaung/gorder/common/config"
 	"github.com/jiahuipaung/gorder/common/logging"
 	"github.com/jiahuipaung/gorder/common/server"
+	"github.com/jiahuipaung/gorder/payment/infrastructure/consumer"
+	"github.com/jiahuipaung/gorder/payment/service"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
-	"payment/infrastructure/consumer"
 )
 
 func init() {
@@ -22,8 +25,19 @@ func main() {
 	serviceName := viper.Sub("payment").GetString("service-name")
 	serviceType := viper.Sub("payment").GetString("server-to-run")
 
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	shutdown, err := tracing.InitJaegerProvider(viper.Sub("jaeger").GetString("url"), serviceName)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	defer func() {
+		_ = shutdown(ctx)
+	}()
+
+	application, cleanup := service.NewApplication(ctx)
+	defer cleanup()
 
 	ch, connectClose := broker.Connect(
 		viper.Sub("rabbit-mq").GetString("user"),
@@ -36,8 +50,8 @@ func main() {
 		_ = connectClose()
 	}()
 
-	go consumer.NewConsumer().Listen(ch)
-	paymentHandler := NewPaymentHandler()
+	go consumer.NewConsumer(application).Listen(ch)
+	paymentHandler := NewPaymentHandler(ch)
 
 	switch serviceType {
 	case "http":
