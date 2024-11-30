@@ -48,7 +48,7 @@ func (c *OrderConverter) ClientToEntity(o *client.Order) *domain.Order {
 	c.check(o)
 	return &domain.Order{
 		ID:          o.Id,
-		CustomerID:  o.CustomerID,
+		CustomerID:  o.CustomerId,
 		Status:      o.Status,
 		Items:       NewItemConvertor().ClientToEntities(o.Items),
 		PaymentLink: o.PaymentLink,
@@ -59,7 +59,7 @@ func (c *OrderConverter) EntityToClient(o *domain.Order) *client.Order {
 	c.check(o)
 	return &client.Order{
 		Id:          o.ID,
-		CustomerID:  o.CustomerID,
+		CustomerId:  o.CustomerID,
 		Status:      o.Status,
 		Items:       NewItemConvertor().EntitiesToClient(o.Items),
 		PaymentLink: o.PaymentLink,

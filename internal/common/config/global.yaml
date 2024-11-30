@@ -26,9 +26,19 @@ rabbit-mq:
   password: guest
   host: 127.0.0.1
   port: 5672
+  max-retry-count: 3
 
 jaeger:
   url: "http://127.0.0.1:14268/api/traces"
+
+mongo:
+  username: root
+  password: password
+  host: 127.0.0.1
+  port: 27017
+  db-name: "order"
+  coll-name: "order"
+
 
 
 stripe-key: "${STRIPE_KEY}"

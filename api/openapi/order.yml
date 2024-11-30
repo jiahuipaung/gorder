@@ -10,18 +10,18 @@ servers:
         default: 127.0.0.1
 
 paths:
-  /customer/{customerID}/orders/{orderID}:
+  /customer/{customer_id}/orders/{order_id}:
     get:
       description: "get order"
       parameters:
         - in: path
-          name: customerID
+          name: customer_id
           schema:
             type: string
           required: true
 
         - in: path
-          name: orderID
+          name: order_id
           schema:
             type: string
           required: true
@@ -32,7 +32,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                $ref: '#/components/schemas/response'
 
         default:
           description: todo
@@ -40,12 +40,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-  /customer/{customerID}/orders/:
+  /customer/{customer_id}/orders/:
     post:
       description: "post order"
       parameters:
         - in: path
-          name: customerID
+          name: customer_id
           schema:
             type: string
           required: true
@@ -62,7 +62,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Order'
+                $ref: '#/components/schemas/response'
 
         default:
           description: todo
@@ -78,14 +78,14 @@ components:
       type: object
       required:
         - id
-        - customerID
+        - customer_id
         - status
-        - paymentLink
+        - payment_link
         - items
       properties:
         id:
           type: string
-        customerID:
+        customer_id:
           type: string
         status:
           type: string
@@ -93,7 +93,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Item'
-        paymentLink:
+        payment_link:
           type: string
 
     Item:
@@ -102,7 +102,7 @@ components:
         - id
         - name
         - quantity
-        - priceId
+        - price_id
       properties:
         id:
           type: string
@@ -111,7 +111,7 @@ components:
         quantity:
           type: integer
           format: int32
-        priceId:
+        price_id:
           type: string
 
     Error:
@@ -123,10 +123,10 @@ components:
     CreateOrderRequest:
       type: object
       required:
-        - customerID
+        - customer_id
         - items
       properties:
-        customerID:
+        customer_id:
           type: string
         items:
           type: array
@@ -144,3 +144,19 @@ components:
         quantity:
           type: integer
           format: int32
+    response:
+      type: object
+      properties:
+        errno:
+          type: integer
+        message:
+          type: string
+        data:
+          type: object
+        trace_id:
+          type: string
+      required:
+        - errno
+        - message
+        - data
+        - trace_id

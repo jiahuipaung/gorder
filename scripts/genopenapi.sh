@@ -42,10 +42,10 @@ function gen() {
 
   prepare_dir "internal/common/client/$service"
 
-  run oapi-codegen -generate types -o "$output_dir/openapi_types.gen.go" -package "$package" "api/openapi/$service.yml"
-  run oapi-codegen -generate "${GEN_SERVER[0]}" -o "$output_dir/openapi_api.gen.go" -package "$package" "api/openapi/$service.yml"
-  run oapi-codegen -generate types -o "internal/common/client/$service/openapi_types.gen.go" -package "$service" "api/openapi/$service.yml"
-  run oapi-codegen -generate client -o "internal/common/client/$service/openapi_client_gen.go" -package "$service" "api/openapi/$service.yml"
+  run oapi-codegen -config api/openapi/cfg.yaml -generate types -o "$output_dir/openapi_types.gen.go" -package "$package" "api/openapi/$service.yml"
+  run oapi-codegen -config api/openapi/cfg.yaml -generate "${GEN_SERVER[0]}" -o "$output_dir/openapi_api.gen.go" -package "$package" "api/openapi/$service.yml"
+  run oapi-codegen -config api/openapi/cfg.yaml -generate types -o "internal/common/client/$service/openapi_types.gen.go" -package "$service" "api/openapi/$service.yml"
+  run oapi-codegen -config api/openapi/cfg.yaml -generate client -o "internal/common/client/$service/openapi_client_gen.go" -package "$service" "api/openapi/$service.yml"
 }
 
 gen internal/order/ports ports order

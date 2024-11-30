@@ -42,7 +42,7 @@ func (c *Consumer) Listen(ch *amqp.Channel) {
 	}
 }
 
-func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, _ *amqp.Channel) {
+func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Channel) {
 	ctx := broker.ExtractRabbitMQHeader(context.Background(), msg.Headers)
 	t := otel.Tracer("rabbitMQ")
 	_, span := t.Start(ctx, fmt.Sprintf("rabbirMQ.%s.consume", q.Name))
@@ -61,8 +61,10 @@ func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, _ *amqp.Channe
 			return order, nil
 		},
 	}); err != nil {
-		//	TODO: retry
 		logrus.Infof("fail to update Order err:%v", err)
+		if err = broker.HandleRetry(ctx, ch, &msg); err != nil {
+			logrus.Warnf("error handle retry, messageID:%s, err=%v", msg.MessageId, err)
+		}
 		_ = msg.Nack(false, false)
 	}
 	span.AddEvent("order updated")

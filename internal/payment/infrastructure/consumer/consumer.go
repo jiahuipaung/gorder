@@ -35,11 +35,11 @@ func (c *Consumer) Listen(ch *amqp.Channel) {
 	}
 
 	for msg := range msgs {
-		c.handleMessage(msg, q)
+		c.handleMessage(msg, q, ch)
 	}
 }
 
-func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue) {
+func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Channel) {
 	logrus.Infof("Payment receive a message from %s, message=%s", q.Name, string(msg.Body))
 	ctx := broker.ExtractRabbitMQHeader(context.Background(), msg.Headers)
 	tr := otel.Tracer("rabbitMQ")
@@ -51,8 +51,10 @@ func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue) {
 		_ = msg.Nack(false, false)
 	}
 	if _, err := c.app.Commands.CreatePayment.Handler(ctx, command.CreatePayment{Order: o}); err != nil {
-		// TODO: retry
 		logrus.Warnf("fail to create payment, err=%v", err)
+		if err = broker.HandleRetry(ctx, ch, &msg); err != nil {
+			logrus.Warnf("error handle retry, messageID:%s, err=%v", msg.MessageId, err)
+		}
 		_ = msg.Nack(false, false)
 	}
 	span.AddEvent("payment created")

@@ -5,7 +5,7 @@ import (
 	"github.com/jiahuipaung/gorder/common/tracing"
 
 	"github.com/jiahuipaung/gorder/common/broker"
-	"github.com/jiahuipaung/gorder/common/config"
+	_ "github.com/jiahuipaung/gorder/common/config"
 	"github.com/jiahuipaung/gorder/common/logging"
 	"github.com/jiahuipaung/gorder/common/server"
 	"github.com/jiahuipaung/gorder/payment/infrastructure/consumer"
@@ -15,9 +15,7 @@ import (
 )
 
 func init() {
-	if err := config.NewViperConfig(); err != nil {
-		logrus.Fatal(err)
-	}
+	logging.Init()
 }
 
 func main() {

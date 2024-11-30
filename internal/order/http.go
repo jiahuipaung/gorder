@@ -3,61 +3,65 @@ package main
 import (
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/jiahuipaung/gorder/common"
 	client "github.com/jiahuipaung/gorder/common/client/order"
-	"github.com/jiahuipaung/gorder/common/tracing"
 	"github.com/jiahuipaung/gorder/order/app"
 	"github.com/jiahuipaung/gorder/order/app/command"
 	"github.com/jiahuipaung/gorder/order/app/query"
-	"net/http"
-	"order/convertor"
+	"github.com/jiahuipaung/gorder/order/convertor"
+	"order/app/dto"
 )
 
 type HTTPServer struct {
+	common.BaseResponse
 	app app.Application
 }
 
-func (s *HTTPServer) PostCustomerCustomerIDOrders(c *gin.Context, customerID string) {
-	ctx, span := tracing.Start(c, "PostCustomerCustomerIDOrders")
-	defer span.End()
-	var req client.CreateOrderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+func (s *HTTPServer) PostCustomerCustomerIdOrders(c *gin.Context, customerID string) {
+	//ctx, span := tracing.Start(c, "PostCustomerCustomerIDOrders")
+	//defer span.End()
+	var (
+		req  client.CreateOrderRequest
+		err  error
+		resp dto.CreateOrderResponse
+	)
+	defer func() {
+		s.Response(c, err, resp)
+	}()
+	if err = c.ShouldBindJSON(&req); err != nil {
 		return
 	}
-	r, err := s.app.Commands.CreateOrder.Handler(ctx, command.CreateOrder{
-		CustomerID: req.CustomerID,
+	r, err := s.app.Commands.CreateOrder.Handler(c.Request.Context(), command.CreateOrder{
+		CustomerID: req.CustomerId,
 		Items:      convertor.NewItemWithQuantityConverter().ClientToEntities(req.Items),
 	})
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"message":      "success",
-		"customer_id":  req.CustomerID,
-		"trace_id":     tracing.TraceID(ctx),
-		"order_id":     r.OrderID,
-		"redirect_url": fmt.Sprintf("http://localhost:8282/success?customerID=%s&orderID=%s", req.CustomerID, r.OrderID),
-	})
+	resp = dto.CreateOrderResponse{
+		CustomerID:  req.CustomerId,
+		OrderID:     r.OrderID,
+		RedirectURL: fmt.Sprintf("http://localhost:8282/success?customerID=%s&orderID=%s", req.CustomerId, r.OrderID),
+	}
 }
 
-func (s *HTTPServer) GetCustomerCustomerIDOrdersOrderID(c *gin.Context, customerID string, orderID string) {
-	ctx, span := tracing.Start(c, "PostCustomerCustomerIDOrders")
-	defer span.End()
-	o, err := s.app.Queries.GetCustomerOrder.Handler(ctx, query.GetCustomerOrder{
+func (s *HTTPServer) GetCustomerCustomerIdOrdersOrderId(c *gin.Context, customerID string, orderID string) {
+	var (
+		err  error
+		resp struct {
+			Order *client.Order `json:"order"`
+		}
+	)
+	defer func() {
+		s.Response(c, err, resp)
+	}()
+	o, err := s.app.Queries.GetCustomerOrder.Handler(c.Request.Context(), query.GetCustomerOrder{
 		OrderId:    orderID,
 		CustomerId: customerID,
 	})
 
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"error": err})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"message":  "success",
-		"trace_id": tracing.TraceID(ctx),
-		"data": gin.H{
-			"Order": o,
-		},
-	})
+	resp.Order = convertor.NewOrderConverter().EntityToClient(o)
 }
