@@ -27,6 +27,7 @@ go.work.sum
 .DS_Store
 .gobincache/
 
-**/mysql_data
+
+**/mysql_data/
 **/tmp/
 **/bin/
