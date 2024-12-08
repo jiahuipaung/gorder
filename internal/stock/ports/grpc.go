@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"github.com/jiahuipaung/gorder/common/tracing"
+	"github.com/jiahuipaung/gorder/stock/convertor"
 
 	"github.com/jiahuipaung/gorder/common/genproto/stockpb"
 	"github.com/jiahuipaung/gorder/stock/app"
@@ -24,15 +25,16 @@ func (G GRPCServer) GetItems(ctx context.Context, request *stockpb.GetItemsReque
 	if err != nil {
 		return nil, err
 	}
-	return &stockpb.GetItemsResponse{Items: items}, nil
+	return &stockpb.GetItemsResponse{Items: convertor.NewItemConvertor().EntitiesToProto(items)}, nil
 }
 
 func (G GRPCServer) CheckIfItemsInStock(ctx context.Context, request *stockpb.CheckIfItemsInStockRequest) (*stockpb.CheckIfItemsInStockResponse, error) {
 	_, span := tracing.Start(ctx, "GRPC.CheckIfItemsInStock")
 	defer span.End()
-	items, err := G.app.Queries.CheckIfItemsInStock.Handler(ctx, query.CheckIfItemsInStock{Items: request.Items})
+	items, err := G.app.Queries.CheckIfItemsInStock.Handler(ctx, query.CheckIfItemsInStock{
+		Items: convertor.NewItemWithQuantityConverter().ProtoToEntities(request.Items)})
 	if err != nil {
 		return nil, err
 	}
-	return &stockpb.CheckIfItemsInStockResponse{InStock: 1, Items: items}, nil
+	return &stockpb.CheckIfItemsInStockResponse{InStock: 1, Items: convertor.NewItemConvertor().EntitiesToProto(items)}, nil
 }

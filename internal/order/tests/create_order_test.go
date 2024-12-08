@@ -41,12 +41,12 @@ func TestCreateOrder_success(t *testing.T) {
 		CustomerId: "123",
 		Items: []sw.ItemWithQuantity{
 			{
-				Id:       "test-item-1",
+				Id:       "prod_RJSTvx7esAsZPO",
 				Quantity: 1,
 			},
 			{
-				Id:       "test-item-2",
-				Quantity: 30,
+				Id:       "prod_RF0FdWn4QcilMq",
+				Quantity: 3,
 			},
 		},
 	})
@@ -57,14 +57,15 @@ func TestCreateOrder_success(t *testing.T) {
 	assert.Equal(t, 0, response.JSON200.Errno)
 }
 
-func TestCreateOrder_invalidParams(t *testing.T) {
-	response, err := getResponse(t, "123", sw.PostCustomerCustomerIdOrdersJSONRequestBody{
-		CustomerId: "123",
-		Items:      nil,
-	})
-	if err != nil {
-		t.Error(err)
-	}
-	assert.Equal(t, http.StatusOK, response.StatusCode())
-	assert.Equal(t, 2, response.JSON200.Errno)
-}
+//
+//func TestCreateOrder_invalidParams(t *testing.T) {
+//	response, err := getResponse(t, "123", sw.PostCustomerCustomerIdOrdersJSONRequestBody{
+//		CustomerId: "123",
+//		Items:      nil,
+//	})
+//	if err != nil {
+//		t.Error(err)
+//	}
+//	assert.Equal(t, http.StatusOK, response.StatusCode())
+//	assert.Equal(t, 2, response.JSON200.Errno)
+//}

@@ -23,7 +23,6 @@ func init() {
 }
 
 func main() {
-	logging.Init()
 	serviceName := viper.Sub("order").GetString("service-name")
 
 	ctx, cancel := context.WithCancel(context.Background())

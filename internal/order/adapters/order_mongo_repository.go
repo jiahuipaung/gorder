@@ -40,7 +40,7 @@ type orderModel struct {
 }
 
 func (r *OrderRepositoryMongo) Create(ctx context.Context, order *domain.Order) (created *domain.Order, err error) {
-	defer r.logWithTag("create", err, created)
+	defer r.logWithTag("create", err, order, created)
 	write := r.marshalToModel(order)
 	res, err := r.collection().InsertOne(ctx, write)
 	if err != nil {
@@ -52,7 +52,7 @@ func (r *OrderRepositoryMongo) Create(ctx context.Context, order *domain.Order) 
 }
 
 func (r *OrderRepositoryMongo) Get(ctx context.Context, id, customerID string) (got *domain.Order, err error) {
-	defer r.logWithTag("get", err, got)
+	defer r.logWithTag("get", err, nil, got)
 	read := &orderModel{}
 	mongoID, _ := primitive.ObjectIDFromHex(id)
 	condition := bson.M{"_id": mongoID}
@@ -71,6 +71,7 @@ func (r *OrderRepositoryMongo) Update(
 	ctx context.Context,
 	o *domain.Order,
 	updateFn func(context.Context, *domain.Order) (*domain.Order, error)) (err error) {
+	defer r.logWithTag("update", err, o, nil)
 	if o == nil {
 		panic("order is nil")
 	}
@@ -81,7 +82,7 @@ func (r *OrderRepositoryMongo) Update(
 	}
 	defer session.EndSession(ctx)
 
-	if err := session.StartTransaction(); err != nil {
+	if err = session.StartTransaction(); err != nil {
 		return err
 	}
 	defer func() {
@@ -101,10 +102,11 @@ func (r *OrderRepositoryMongo) Update(
 	if err != nil {
 		return
 	}
+	logrus.Infof("update||oldOrder=%v||updated=%v", oldOrder, updated)
 	mongoID, _ := primitive.ObjectIDFromHex(oldOrder.ID)
 	res, err := r.collection().UpdateOne(
 		ctx,
-		bson.M{"_id": mongoID, "customer_id": o.CustomerID},
+		bson.M{"_id": mongoID, "customer_id": oldOrder.CustomerID},
 		bson.M{"$set": bson.M{
 			"status":       updated.Status,
 			"payment_link": updated.PaymentLink,
@@ -113,7 +115,7 @@ func (r *OrderRepositoryMongo) Update(
 	if err != nil {
 		return
 	}
-	r.logWithTag("update", err, res)
+	r.logWithTag("finish_update", err, o, res)
 	return
 }
 
@@ -138,12 +140,13 @@ func (r *OrderRepositoryMongo) unmarshal(model *orderModel) *domain.Order {
 	}
 }
 
-func (r *OrderRepositoryMongo) logWithTag(tag string, err error, result interface{}) {
+func (r *OrderRepositoryMongo) logWithTag(tag string, err error, input *domain.Order, result interface{}) {
 	l := logrus.WithFields(logrus.Fields{
-		"tag":       "order_repository_mongo",
-		"exec_time": time.Now().Unix(),
-		"err":       err,
-		"result":    result,
+		"tag":         "order_repository_mongo",
+		"input_order": input,
+		"exec_time":   time.Now().Unix(),
+		"err":         err,
+		"result":      result,
 	})
 	if err != nil {
 		l.Infof("%s fail", tag)

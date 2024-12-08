@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"github.com/jiahuipaung/gorder/common/tracing"
-
 	_ "github.com/jiahuipaung/gorder/common/config"
 	"github.com/jiahuipaung/gorder/common/discovery"
 	"github.com/jiahuipaung/gorder/common/genproto/stockpb"
 	"github.com/jiahuipaung/gorder/common/logging"
 	"github.com/jiahuipaung/gorder/common/server"
+	"github.com/jiahuipaung/gorder/common/tracing"
 	"github.com/jiahuipaung/gorder/stock/ports"
 	"github.com/jiahuipaung/gorder/stock/service"
 	"github.com/sirupsen/logrus"
@@ -21,7 +20,6 @@ func init() {
 }
 
 func main() {
-	logging.Init()
 	serviceName := viper.Sub("stock").GetString("service-name")
 	serviceType := viper.Sub("stock").GetString("server-to-run")
 

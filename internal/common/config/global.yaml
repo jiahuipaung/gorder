@@ -21,6 +21,9 @@ payment:
   http-addr: 127.0.0.1:8284
   grpc-addr: 127.0.0.1:5004
 
+kitchen:
+  service-name: kitchen
+
 rabbit-mq:
   user: guest
   password: guest
@@ -39,6 +42,13 @@ mongo:
   db-name: "order"
   coll-name: "order"
 
+
+mysql:
+  user: root
+  password: root
+  host: localhost
+  port: 3307
+  dbname: "gorder_v2"
 
 
 stripe-key: "${STRIPE_KEY}"

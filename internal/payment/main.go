@@ -19,7 +19,6 @@ func init() {
 }
 
 func main() {
-	logging.Init()
 	serviceName := viper.Sub("payment").GetString("service-name")
 	serviceType := viper.Sub("payment").GetString("server-to-run")
 
