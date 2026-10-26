@@ -29,6 +29,9 @@
 2. [支付消息重复投递实验](experiments/payment-redelivery.md)；
 3. [证据与公开边界](project-evidence.md)。
 
+其中 `make verify` 是当前持续验证路径；完整业务链路需要外部 Stripe test resources 和分别
+启动四个进程，属于探索性调试路径。
+
 ## 文档地图
 
 | 文档 | 回答的问题 |

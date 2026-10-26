@@ -84,14 +84,17 @@ make verify
 docker compose up -d
 ```
 
-Compose 提供 MongoDB、MySQL、RabbitMQ、Consul、Jaeger、Prometheus、Grafana 和
-Redis。配置文件中的账号密码仅为本地开发默认值；Stripe 凭据必须通过环境变量提供，
-不得提交真实密钥：
+Compose 提供 MongoDB、MySQL、RabbitMQ、Consul、Jaeger、Prometheus 和 Grafana，不包含
+四个业务进程或 Redis。配置文件中的账号密码仅为本地开发默认值；Stripe 凭据必须通过
+环境变量提供，不得提交真实密钥：
 
 ```bash
 export STRIPE_KEY=replace-with-a-test-key
 export ENDPOINT_STRIPE_SECRET=replace-with-a-test-webhook-secret
 ```
+
+基础设施启动、四个业务进程的顺序、测试数据准备和已知限制见
+[本地开发指南](docs/development/local-development.md)。
 
 ## 目录
 
