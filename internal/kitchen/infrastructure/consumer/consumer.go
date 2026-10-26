@@ -3,14 +3,14 @@ package consumer
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"time"
+
 	"github.com/jiahuipaung/gorder/common/broker"
 	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
-	"time"
 )
 
 type Order struct {
@@ -26,12 +26,20 @@ type OrderService interface {
 }
 
 type Consumer struct {
-	orderGRPC OrderService
+	orderGRPC    OrderService
+	retryHandler RetryHandler
+	cookHandler  CookHandler
 }
+
+type RetryHandler func(context.Context, *amqp.Channel, *amqp.Delivery) error
+
+type CookHandler func(*Order)
 
 func NewConsumer(orderGRPC OrderService) *Consumer {
 	return &Consumer{
-		orderGRPC: orderGRPC,
+		orderGRPC:    orderGRPC,
+		retryHandler: broker.HandleRetry,
+		cookHandler:  cook,
 	}
 }
 
@@ -56,47 +64,44 @@ func (c *Consumer) Listen(ch *amqp.Channel) {
 }
 
 func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Channel) {
-	var err error
 	logrus.Infof("Kitchen receive a message from %s, message=%s", q.Name, string(msg.Body))
 	ctx := broker.ExtractRabbitMQHeader(context.Background(), msg.Headers)
 	t := otel.Tracer("rabbitMQ")
 	mqCtx, span := t.Start(ctx, fmt.Sprintf("rabbitMQ.%s.consumer", q.Name))
-
-	defer func() {
-		span.End()
-		if err != nil {
-			_ = msg.Nack(false, false)
-		} else {
-			_ = msg.Ack(false)
-		}
-	}()
+	defer span.End()
 
 	o := &Order{}
-	if err = json.Unmarshal(msg.Body, o); err != nil {
+	if err := json.Unmarshal(msg.Body, o); err != nil {
 		logrus.Warnf("fail to unmarshal msg to order, err=%v", err)
 		_ = msg.Nack(false, false)
+		return
 	}
 	if o.Status != "paid" {
-		err = errors.New("order not paid, cannot cook ")
+		logrus.Warnf("order not paid, cannot cook: order=%s status=%s", o.ID, o.Status)
+		_ = msg.Nack(false, false)
 		return
 	}
 
-	cook(o)
+	c.cookHandler(o)
 	span.AddEvent(fmt.Sprintf("order_cook: %+v", o))
-	if err = c.orderGRPC.UpdateOrder(mqCtx, &orderpb.Order{
+	if err := c.orderGRPC.UpdateOrder(mqCtx, &orderpb.Order{
 		ID:          o.ID,
 		CustomerID:  o.CustomerID,
 		Status:      "ready",
 		PaymentLink: o.PaymentLink,
 		Items:       o.Items,
 	}); err != nil {
-		if err = broker.HandleRetry(mqCtx, ch, &msg); err != nil {
+		if err = c.retryHandler(mqCtx, ch, &msg); err != nil {
 			logrus.Warnf("kitchen: fail to updateOrder and handle retry, err=%v", err)
+			_ = msg.Nack(false, true)
+			return
 		}
+		_ = msg.Ack(false)
 		return
 	}
 
 	span.AddEvent("kitchen: update order")
+	_ = msg.Ack(false)
 	logrus.Infof("consume successfully")
 }
 
