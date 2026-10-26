@@ -2,8 +2,9 @@
 
 [返回文档地图](../README.md) · [可靠性模型](reliability.md)
 
-本文记录从当前实现继续演进的路线。**P0 Consumer correctness 已实现并有离线测试；P1-P6
-仍是演进方案，当前尚未实现。** 路线按“先关闭已知失败窗口，再增加系统复杂度”的顺序
+本文记录从当前实现继续演进的路线。**P0 Consumer correctness 与显式订单迁移基础切片已实现
+并有离线测试；P1-P3、完整 P4 及 P5-P6 仍是演进方案。** 路线按“先关闭已知失败窗口，
+再增加系统复杂度”的顺序
 组织，不以堆叠中间件为目标。每个后续阶段必须同时交付实现、故障测试和可观测证据，才
 可以更新[能力矩阵](../project-evidence.md)。
 
@@ -21,7 +22,8 @@
 
 ```mermaid
 flowchart LR
-    P0[P0 控制流与错误传播] --> P1[P1 稳定事件契约 + Inbox]
+    P0[P0 控制流与错误传播] --> P05[P0.5 显式订单迁移]
+    P05 --> P1[P1 稳定事件契约 + Inbox]
     P1 --> P2[P2 Outbox 消除 DB/MQ 双写]
     P2 --> P3[P3 库存预占状态机]
     P3 --> P4[P4 订单流程编排与补偿]
@@ -71,7 +73,26 @@ P0 只让错误语义可预测，仍不能消除 DB/MQ 双写，也不能防止 
 
 复现步骤见 [Consumer correctness 实验](../experiments/consumer-correctness.md)。
 
-## 4. P1：稳定事件契约与持久化 Inbox
+## 4. P0.5：显式订单迁移（已实现）
+
+### 已实现方案
+
+- 新订单以 `pending` 状态创建；
+- Payment 用 `AttachPaymentSession` 执行 `pending -> waiting_for_payment`；
+- Order consumer 用 `MarkPaid` 执行 `waiting_for_payment -> paid`；
+- Kitchen 用 `MarkOrderReady` 执行 `paid -> ready`；
+- 三条首次迁移都以旧状态作为 MongoDB `UpdateOne` 条件，精确重放成功 no-op；
+- 通用 `UpdateOrder(Order)` gRPC、应用命令、repository `Update` 和对应伪事务已删除；
+- Stripe Checkout 使用订单 ID 作为幂等键，收口 Payment 重投重复创建会话的常见窗口。
+
+### 不解决什么
+
+该切片只约束 Order 写模型。它没有提供事件身份、Inbox/Outbox、库存预占或 Kitchen 副作用
+去重。Stripe 幂等键也不是本地支付记录与对账机制。
+
+复现步骤见[显式订单迁移实验](../experiments/explicit-order-transitions.md)。
+
+## 5. P1：稳定事件契约与持久化 Inbox
 
 ### 要解决的问题
 
@@ -136,7 +157,7 @@ P2 Outbox。
 - 在“业务提交后、ACK 前”注入 crash，重启后重复 delivery 被 Inbox 吸收；
 - schema version 未知时进入明确的不可重试错误路径，而不是静默解析。
 
-## 5. P2：Transactional Outbox
+## 6. P2：Transactional Outbox
 
 ### 要解决的问题
 
@@ -176,7 +197,7 @@ Outbox 解决“不能漏发”，不提供 exactly-once；P1 Inbox 和业务幂
 - 重复发布具有同一 `event_id`，consumer 只提交一次业务效果；
 - Outbox backlog、最老待发布年龄、attempt count 有指标和告警。
 
-## 6. P3：库存预占、确认与释放
+## 7. P3：库存预占、确认与释放
 
 ### 要解决的问题
 
@@ -229,17 +250,18 @@ Reserve 在一个 MySQL transaction 中执行条件更新：只有
 - crash 后超时任务可以恢复并释放遗留 reservation；
 - 属性测试持续检查 `on_hand >= 0`、`reserved >= 0` 和 reservation 汇总一致性。
 
-## 7. P4：显式订单流程与补偿
+## 8. P4：完整订单流程与补偿
 
 ### 要解决的问题
 
-当前状态字段把支付和履约混在一个字符串里，通用 `UpdateOrder` 可以直接覆盖任意状态，无法
-回答“流程卡在哪一步、下一动作是什么、补偿是否完成”。
+当前已收口主流程写入口，但一个状态字段仍把支付和履约阶段放在同一维度，也没有取消、退款、
+库存确认、失败待处理和补偿状态，仍无法完整回答“流程卡在哪一步、下一动作是什么、补偿是否
+完成”。
 
 ### 方案
 
-- 用显式 command 取代通用 `UpdateOrder`：`AttachPaymentSession`、`MarkPaid`、
-  `MarkInventoryConfirmed`、`MarkReady`、`CancelOrder`；
+- 延续已经实现的 `AttachPaymentSession`、`MarkPaid`、`MarkReady`，再按真实需求增加
+  `MarkInventoryConfirmed`、`CancelOrder` 等显式 command；
 - 每个 command 定义旧状态、目标状态、幂等结果和非法迁移；
 - Order 保存流程版本或 revision，条件更新包含旧状态/revision；
 - 记录每一步的 correlation ID、attempt 和 last error；
@@ -257,7 +279,7 @@ engine。只有在超时、等待、人工节点和分支数量显著增加时�
 - 重放同一 command 不会重复扣库存、退款或履约；
 - 从任意持久化中间状态重启都能继续，而不是依赖进程内 goroutine。
 
-## 8. P5：对账与自动修复
+## 9. P5：对账与自动修复
 
 ### 要解决的问题
 
@@ -283,7 +305,7 @@ engine。只有在超时、等待、人工节点和分支数量显著增加时�
 - 重放不会绕过正常 command 的状态约束；
 - 对账延迟、差异数量、修复成功率和转人工数量可观测。
 
-## 9. P6：故障注入与可量化证据
+## 10. P6：故障注入与可量化证据
 
 ### 建议实验矩阵
 
@@ -309,11 +331,12 @@ engine。只有在超时、等待、人工节点和分支数量显著增加时�
 在这些实验完成前，不应给出 QPS、可用性、零丢失或恢复时间承诺。压测指标也必须附带硬件、
 数据规模、请求模型和依赖配置，才能作为作品证据。
 
-## 10. 推荐的作品集实施切片
+## 11. 推荐的作品集实施切片
 
 为了保持项目简单且每一步都能讲清楚，建议按下面四个可独立评审的切片推进：
 
-1. **Consumer correctness**：完成 P0，统一确认状态测试；
+1. **Consumer correctness + explicit transitions（已完成）**：统一确认终态，并用显式命令与
+   条件更新保护主流程状态；
 2. **Reliable payment event**：完成 Provider event ledger、Payment Outbox、Order Inbox，并加入
    webhook crash-point test；
 3. **Reliable order creation**：完成 Order Outbox 和 publisher worker；

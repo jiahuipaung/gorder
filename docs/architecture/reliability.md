@@ -14,11 +14,11 @@ GOrder 当前链路包含四个不同层次，不能用一个“幂等”概念�
 |---|---|---|
 | Delivery | 一条 RabbitMQ delivery 最终 ACK、NACK 还是重投？ | Payment、Order、Kitchen 已验证单一确认终态 |
 | Event | 同一个业务事件怎样被识别？ | 没有稳定 event ID、Provider event ID 或持久化 Inbox |
-| State transition | 重复事件会不会把业务状态重复推进或覆盖？ | `waiting_for_payment -> paid` 已用条件更新闭环 |
+| State transition | 重复事件会不会把业务状态重复推进或覆盖？ | 三条主流程迁移已用条件更新与重放分类闭环 |
 | Side effect | 支付会话、通知、履约等外部动作会不会重复？ | 当前没有通用保护，只验证了订单支付终态 |
 
-因此，当前可以说“订单支付终态迁移幂等”，不能说“整个系统 exactly-once”或“所有消息都
-幂等”。RabbitMQ 的至少一次投递仍然存在，设计目标是让重复 delivery 对特定业务不变量无害。
+因此，当前可以说“已建模的订单状态迁移幂等”，不能说“整个系统 exactly-once”或“所有消息
+都幂等”。RabbitMQ 的至少一次投递仍然存在，设计目标是让重复 delivery 对特定业务不变量无害。
 
 ## 2. 当前已验证的不变量
 
@@ -58,7 +58,7 @@ status = waiting_for_payment
 - event 没有 Provider event ID，无法区分“同一 webhook 重投”和“不同支付事件”；
 - 只保护 Order 状态与支付链接字段，不保护未来新增的积分、通知、账务等副作用；
 - webhook 常携带空支付链接；`MarkPaid` 已在空值时保留本地链接，但非空旧快照仍可能覆盖；
-- 通用 `UpdateOrder` 不受这条状态迁移规则保护。
+- `MarkPaid` 仍允许非空 webhook snapshot 链接覆盖当前链接；事件契约尚未移除这个权威字段。
 
 ### 2.2 客户与订单共同限制更新目标
 
@@ -102,6 +102,16 @@ publish 成功与失败；所有覆盖路径的 ACK/NACK 调用总数都为 1。
 - retry publish 失败后 requeue 原消息，能避免当前 consumer 主动丢弃唯一副本，但永久故障
   可能造成重复投递与队列压力；
 - Kitchen 的 delivery 确认互斥不等于履约副作用幂等，`cook` 后崩溃仍可能重复执行。
+
+### 2.4 支付会话挂接与 ready 迁移受旧状态约束
+
+新订单以 `pending` 落库。Payment 只能调用 `AttachPaymentSession`，其 Mongo filter 包含
+`status=pending`；同链接重放为 no-op，不同链接或其他旧状态返回非法迁移。Kitchen 只能调用
+`MarkOrderReady`，其 filter 包含 `status=paid`；已 ready 的重放为 no-op。
+
+Stripe Checkout Session 创建同时使用订单 ID 作为 `Idempotency-Key`，因此在 Stripe 的幂等
+保留语义内，Payment delivery 重投不会无界创建新会话。这是 Provider 请求幂等，不是本地
+支付 ledger，也不能替代长期对账。
 
 ## 3. RabbitMQ 重试与 DLQ 的实际语义
 
@@ -164,24 +174,25 @@ flowchart LR
 | ID | 失败窗口 | 当前结果 | 影响 | 当前检测/恢复 | 建议优先级 |
 |---|---|---|---|---|---|
 | R1 | Order 写 Mongo 成功，发布 `order.create` 失败 | API 报错但订单已存在 | 支付流程未启动；客户端重试可能重复建单 | 无自动扫描或 Outbox | 高 |
-| R2 | Stripe Checkout 已创建，Order gRPC 更新失败 | error 到达 Payment consumer 并进入 retry；重投可能再次创建 Checkout | Provider 出现多个会话，本地只记录后一次成功回写 | command/consumer 单元测试；无 Payment 幂等记录 | 高 |
+| R2 | Stripe Checkout 已创建，Order gRPC 更新失败 | error 到达 Payment consumer 并进入 retry；同订单重试复用 Stripe 幂等键 | Provider 请求重复窗口已收口；仍无本地支付记录和长期对账 | params/command/consumer 测试；依赖 Provider 幂等保留语义 | 中 |
 | R3 | retry publish 返回 nil，但 Broker 未实际持久化/路由 | consumer ACK 原 delivery | 替代消息和原消息都不可恢复 | 无 publisher confirms，`mandatory=false` | 高 |
 | R4 | Stripe webhook 收到已支付结果，RabbitMQ publish 返回 error | webhook 返回 HTTP 503，等待 Provider 重试 | 恢复依赖 Stripe 重试策略；没有本地 ledger/Outbox | webhook 单元测试；无 Provider 对账 | 高 |
 | R5 | `order.paid` 没有 Provider event ID/Inbox | 不能持久化识别同一 Provider 事件 | 新增副作用后可能重复执行 | 订单终态只能保护一个状态字段集合 | 高 |
-| R6 | webhook metadata 中 payment link 使用旧订单快照 | 空链接已被忽略；非空旧链接仍可能覆盖更新值 | 支付链接回退到较旧 session | repository 测试覆盖空值保留；事件模型仍待重构 | 中 |
-| R7 | Payment/Kitchen 使用通用 `UpdateOrder` | filter 无旧状态/版本 | 并发写可能覆盖新状态或链接 | 无冲突指标或测试 | 高 |
+| R6 | webhook metadata 中 payment link 使用旧订单快照 | 空链接已被忽略；非空值仍可能在 paid 迁移时覆盖当前链接 | 支付链接可能来自旧事件快照 | session 挂接冲突已拒绝；paid payload 权威仍待移除 | 中 |
+| R7 | Payment/Kitchen 状态写入 | 已替换为显式 RPC 与带旧状态的条件更新 | 已建模迁移不再接受任意 snapshot 覆盖 | repository、command、gRPC 测试 | 已关闭（当前模型） |
 | R8 | Stock 只检查、不预占 | 检查后数量仍可被其他订单使用 | 无法建立“不超卖”不变量 | 无 reservation 数据 | 最高（若目标是真实交易） |
 | R9 | Kitchen 在 ACK 前执行 `cook` | 重投会再次执行副作用 | 重复履约 | 无 Inbox/履约记录 | 高 |
 | R10 | retry/DLQ republish 持续失败 | 原消息持续 requeue | 不会由当前调用主动丢弃，但可能形成热循环和队列压力 | 日志；无熔断、调度队列或告警 | 中 |
-| R11 | Mongo 通用 `Update` 启动 session，但读写仍使用普通 context；本地 Mongo 还是 standalone | 操作没有证据表明处于 transaction 中；修正 context 后 standalone 也不支持该事务形态 | 并发覆盖或完整本地链路失败 | 默认离线测试不覆盖 | 高 |
+| R11 | Mongo 通用 `Update` 的伪事务 | 通用入口与未生效事务已删除，单文档迁移使用条件 `UpdateOne` | 当前三条迁移不再依赖 transaction；未来多文档操作仍需重新设计 | Mongo mock 验证条件 filter | 已关闭（当前模型） |
 | R12 | metrics 是空实现，Prometheus 未抓取业务服务 | 失败只能靠日志发现 | 检测时间与定位质量差 | Jaeger/日志骨架 | 中 |
 
 ## 6. 一致性语义总结
 
 | 场景 | 当前一致性结论 |
 |---|---|
-| 单个订单的首次支付迁移 | MongoDB 条件更新范围内原子 |
-| 重复 `order.paid` 更新订单终态 | 在已覆盖状态模型内幂等 |
+| 单个订单的三条主流程迁移 | MongoDB 条件更新范围内原子 |
+| 重复挂接同一支付会话、重复 paid、重复 ready | 在已覆盖状态模型内幂等 |
+| 同订单重复创建 Stripe Checkout | 订单 ID 作为 Provider 幂等键；保证范围受 Stripe 幂等保留语义限制 |
 | Order 与 RabbitMQ | 最终一致性意图，但没有 Outbox，可能永久分叉 |
 | Stripe 与本地 Order | publish error 返回 503，但无本地 ledger/Outbox、confirms 和对账，仍只有最终一致性意图 |
 | Stock 与 Order | 只有时间点检查，不存在库存一致性闭环 |

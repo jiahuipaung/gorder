@@ -4,9 +4,10 @@ GOrder 是一个使用 Go 构建的订单、库存、支付与履约服务示例
 问题的脱敏重建，重点不是补齐商城功能，而是用代码和测试说明：在数据库、消息队列和
 外部支付平台无法共享事务时，怎样守住业务状态的一致性边界。
 
-> 项目状态：可验证的工程作品，不是生产系统源码。当前已经闭环的是支付消息重复投递下
-> 的订单终态幂等，以及 Payment、Order、Kitchen 三个 consumer 的单一确认终态与 webhook
-> 发布失败反馈；Outbox、通用 Inbox、publisher confirms 和库存预占仍是明确保留的演进项。
+> 项目状态：可验证的工程作品，不是生产系统源码。当前已经闭环的是显式订单状态迁移、
+> 支付消息重复投递下的订单终态幂等，以及 Payment、Order、Kitchen 三个 consumer 的单一
+> 确认终态与 webhook 发布失败反馈；Outbox、通用 Inbox、publisher confirms 和库存预占仍是
+> 明确保留的演进项。
 
 ## 核心问题
 
@@ -15,11 +16,11 @@ GOrder 是一个使用 Go 构建的订单、库存、支付与履约服务示例
 - 并发或乱序事件不能把订单从终态覆盖回旧状态；
 - MongoDB、MySQL、RabbitMQ 和支付平台之间不存在一个全局事务。
 
-当前实现把订单状态迁移的正确性放在持久化层：只有
-`waiting_for_payment -> paid` 能通过原子条件更新；重复支付消息返回成功 no-op，且一条
-delivery 只会进入 ACK 或 NACK 其中一条路径。下游处理失败时，retry/DLQ 交接成功才 ACK
-原消息；交接失败则 NACK 并请求 requeue。这个规则避免当前进程主动丢弃唯一副本，但没有
-publisher confirms，不能据此宣称端到端零丢失。
+当前实现把订单状态迁移的正确性放在持久化层：`pending -> waiting_for_payment -> paid ->
+ready` 的三条迁移都使用带旧状态的原子条件更新，精确重放返回成功 no-op。Stripe Checkout
+使用订单 ID 作为幂等键。一条 delivery 只会进入 ACK 或 NACK 其中一条路径；下游处理失败时，
+retry/DLQ 交接成功才 ACK 原消息，交接失败则 NACK 并请求 requeue。这个规则避免当前进程
+主动丢弃唯一副本，但没有 publisher confirms，不能据此宣称端到端零丢失。
 
 ## 架构
 
@@ -61,10 +62,12 @@ make verify
 - 编译并测试 Common、Payment、Stock 和 Kitchen 模块；
 - 对支付重投涉及的 Order 包运行测试与 race detector；
 - 验证首次支付、重复投递、并发重放、租户隔离和三个 consumer 的 ACK/NACK 互斥；
+- 验证显式支付会话挂接、ready 迁移、gRPC 错误分类与 Stripe 幂等键；
 - 使用真实 Stripe 测试签名验证 webhook 发布成功、发布失败和非法签名分支。
 
-详细实验说明见[支付消息重复投递：原子状态迁移与 ACK/NACK 互斥](docs/experiments/payment-redelivery.md)
-和 [Consumer correctness：单一确认终态与 webhook 发布反馈](docs/experiments/consumer-correctness.md)。
+详细实验说明见[支付消息重复投递：原子状态迁移与 ACK/NACK 互斥](docs/experiments/payment-redelivery.md)、
+[Consumer correctness：单一确认终态与 webhook 发布反馈](docs/experiments/consumer-correctness.md)和
+[显式订单迁移实验](docs/experiments/explicit-order-transitions.md)。
 
 `internal/order/tests` 中另有一个需要完整本地服务的历史端到端测试，因此不属于默认的
 离线验证集合。
@@ -116,6 +119,8 @@ docs/experiments/    可复现的故障场景与证据边界
 
 | 能力 | 当前状态 |
 |---|---|
+| `pending -> waiting_for_payment -> paid -> ready` 显式迁移 | 已实现；首次迁移、重放、冲突与 gRPC 错误分类有测试 |
+| Stripe Checkout 按订单 ID 幂等创建 | 已实现参数验证；仍不等于本地支付 ledger 或长期对账 |
 | 订单支付终态原子迁移 | 已实现并有单元/并发测试 |
 | 重复支付消息成为 no-op | 已实现并有顺序、并发重放测试 |
 | Payment、Order、Kitchen ACK/NACK 路径互斥 | 已实现并有成功、非法消息和 retry 错误路径测试 |

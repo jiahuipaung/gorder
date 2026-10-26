@@ -28,7 +28,8 @@
 1. [本地开发指南](development/local-development.md)；
 2. [支付消息重复投递实验](experiments/payment-redelivery.md)；
 3. [Consumer correctness 实验](experiments/consumer-correctness.md)；
-4. [证据与公开边界](project-evidence.md)。
+4. [显式订单迁移实验](experiments/explicit-order-transitions.md)；
+5. [证据与公开边界](project-evidence.md)。
 
 其中 `make verify` 是当前持续验证路径；完整业务链路需要外部 Stripe test resources 和分别
 启动四个进程，属于探索性调试路径。
@@ -46,6 +47,7 @@
 | [证据与公开边界](project-evidence.md) | 哪些是源码事实、测试证据、缺口或方案？ |
 | [支付重投实验](experiments/payment-redelivery.md) | 怎样复现并验证支付消息重复投递下的幂等？ |
 | [Consumer correctness 实验](experiments/consumer-correctness.md) | 怎样验证三个 consumer 的单一确认终态和 webhook 发布失败反馈？ |
+| [显式订单迁移实验](experiments/explicit-order-transitions.md) | 怎样验证显式状态迁移、gRPC 错误分类与 Stripe 幂等键？ |
 
 `superpowers/` 保存实施设计和计划，属于项目建设记录，不是理解系统的前置阅读材料。
 

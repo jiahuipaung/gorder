@@ -14,7 +14,7 @@ flowchart LR
     A[Client 创建订单] --> B[Order 查询 Stock]
     B --> C[Order 写 MongoDB]
     C -->|order.create| D[Payment 创建 Stripe Checkout]
-    D --> E[Payment 经 gRPC 回写支付链接]
+    D --> E[Payment 经 gRPC 挂接支付会话]
     E --> F[Client 在 Stripe 完成支付]
     F --> G[Payment 验证 webhook]
     G -->|order.paid| H[Order 原子标记 paid]
@@ -22,8 +22,9 @@ flowchart LR
     I --> J[Kitchen 经 gRPC 写入 ready]
 ```
 
-这条链路没有跨 MongoDB、MySQL、RabbitMQ 与 Stripe 的全局事务。当前最完整的可靠性闭环
-是 `order.paid` 重复投递时的 Order 终态幂等；其他阶段的失败窗口仍需显式处理。
+这条链路没有跨 MongoDB、MySQL、RabbitMQ 与 Stripe 的全局事务。Order 当前用条件更新约束
+`pending -> waiting_for_payment -> paid -> ready`，精确重放成为 no-op；消息发布、库存和履约
+副作用等跨系统失败窗口仍需显式处理。
 
 ## 2. 创建订单
 
@@ -64,14 +65,14 @@ sequenceDiagram
 3. Order 同步调用 Stock 的 `CheckIfItemsInStock`；
 4. Stock 从 MySQL 读取当前数量，逐项比较请求数量；
 5. Stock 再从 Stripe Product API 获取默认 Price ID，返回用于支付的商品快照；
-6. Order 把订单插入 MongoDB，使用 MongoDB ObjectID 的十六进制字符串作为公开订单 ID；
+6. Order 以 `pending` 初始状态插入 MongoDB，使用 MongoDB ObjectID 的十六进制字符串作为公开订单 ID；
 7. Order 将完整订单 JSON 作为持久化 `order.create` 消息发布到同名队列；
 8. HTTP 返回订单 ID 和本地成功页 URL。
 
 ### 2.2 当前语义边界
 
 - Stock 的“有库存”只表示检查时的当前数量足够，不会锁定或扣减数量；
-- 新插入订单没有显式初始状态，`waiting_for_payment` 在后续 Payment 流程中写入；
+- 新插入订单显式处于 `pending`，只有挂接非空支付链接后才能进入 `waiting_for_payment`；
 - Stock 获取某个商品 Price ID 失败时会记录 warning 并跳过该商品，当前不会让整个检查立即失败；
 - OpenAPI 路径包含 `customer_id`，创建 handler 实际使用 request body 中的 `customer_id`，当前没有
   对两个来源做一致性校验。
@@ -104,10 +105,10 @@ sequenceDiagram
 
     MQ->>Consumer: deliver order.create
     Consumer->>PaymentApp: CreatePayment(order)
-    PaymentApp->>Stripe: create Checkout Session
+    PaymentApp->>Stripe: create Checkout Session (Idempotency-Key = order_id)
     Stripe-->>PaymentApp: payment URL
-    PaymentApp->>OrderGRPC: UpdateOrder(waiting_for_payment, URL)
-    OrderGRPC->>Mongo: generic Update
+    PaymentApp->>OrderGRPC: AttachPaymentSession(order_id, customer_id, URL)
+    OrderGRPC->>Mongo: conditional pending -> waiting_for_payment
     Mongo-->>OrderGRPC: success or error
     OrderGRPC-->>PaymentApp: success or error
     alt Stripe 与 Order 更新都成功
@@ -125,8 +126,8 @@ sequenceDiagram
 ```
 
 Stripe Checkout Session metadata 保存 `orderID`、`customerID`、商品 JSON、创建会话时看到的状态
-和支付链接字段，用于 webhook 阶段还原订单引用。创建出新的 URL 后，Payment 通过 Order
-gRPC 的通用 `UpdateOrder` 写入：
+和支付链接字段，用于 webhook 阶段还原订单引用。请求以稳定的订单 ID 作为 Stripe
+`Idempotency-Key`。创建出 URL 后，Payment 通过 Order gRPC 的 `AttachPaymentSession` 提交：
 
 ```text
 status = waiting_for_payment
@@ -151,9 +152,9 @@ consumer，不再把“支付会话已创建但订单链接回写失败”误报
 
 | 位置 | 当前结果 | 风险 |
 |---|---|---|
-| Stripe 已创建 Checkout Session，Order gRPC 回写失败 | error 到达 consumer，并进入 retry/DLQ 交接 | 重试可能再次创建 Checkout Session；没有 Payment 记录或幂等键吸收外部副作用 |
-| Payment 在 gRPC 成功后、ACK 前退出 | Broker 重投 | 再次创建支付链接并覆盖旧链接 |
-| 通用 `UpdateOrder` 与其他更新并发 | 读取后按 ID/客户 ID 写入，无版本前置条件 | 较晚写入可能覆盖较新的状态或支付链接 |
+| Stripe 已创建 Checkout Session，Order gRPC 回写失败 | error 到达 consumer，并进入 retry/DLQ 交接 | 同一订单重试使用同一幂等键；仍缺少本地 Payment ledger 与 Provider 对账 |
+| Payment 在 gRPC 成功后、ACK 前退出 | Broker 重投 | Stripe 返回同一幂等请求结果；Order 对同链接重放返回成功 no-op |
+| 挂接请求携带不同链接或旧状态不为 `pending` | 条件更新不命中并读取分类 | 拒绝覆盖并返回 `FailedPrecondition`，由现有 retry/DLQ 路径处理 |
 | Stripe metadata 构造 | 使用创建 Checkout 前收到的订单字段 | metadata 中 `paymentLink` 是旧值，通常为空 |
 
 ## 4. 支付成功与订单终态迁移
@@ -246,8 +247,8 @@ sequenceDiagram
     MQ->>Kitchen: deliver order.paid
     Kitchen->>Kitchen: parse JSON and require status == paid
     Kitchen->>Kitchen: sleep 5s to simulate cook
-    Kitchen->>OrderGRPC: UpdateOrder(status = ready)
-    OrderGRPC->>Mongo: generic Update
+    Kitchen->>OrderGRPC: MarkOrderReady(order_id, customer_id)
+    OrderGRPC->>Mongo: conditional paid -> ready
     alt update success
         Kitchen->>MQ: ACK
     else update fails
@@ -266,8 +267,8 @@ Kitchen 是演示性的履约 worker，不代表真实仓储、发货或制作�
 
 - `cook` 是不可追踪的五秒 sleep，没有独立履约记录或幂等键；
 - 若执行完 `cook` 后、Order gRPC 成功前后发生重投，模拟副作用会再次执行；
-- 通用 `UpdateOrder` 没有要求旧状态必须为 `paid`，也没有版本条件；
-- `ready` 在 Kitchen 中以字符串写入，但 Order domain 没有对应常量或正式迁移方法；
+- `MarkOrderReady` 要求旧状态为 `paid`；首次更新原子写入 `ready`，精确重放成功 no-op；
+- `ready` 已成为 Order domain 的显式状态，但没有拆分制作中、失败、取消等更细履约状态；
 - JSON 解析失败或状态不是 `paid` 时只执行一次 `Nack(requeue=false)`，不会 cook 或调用 gRPC；
 - Order gRPC 失败后，retry 交接成功 ACK 原 delivery，交接失败 NACK 并 requeue；这修复了确认
   控制流，但不解决 `cook` 已经发生后的副作用重复；
@@ -280,6 +281,8 @@ Kitchen 是演示性的履约 worker，不代表真实仓储、发货或制作�
 | 不变量 | 当前机制 | 证据状态 |
 |---|---|---|
 | 支付终态只能从 `waiting_for_payment` 首次迁移到 `paid` | MongoDB 条件更新 | 已验证 |
+| 支付会话只能从 `pending` 首次挂接，冲突链接不能覆盖 | MongoDB 条件更新与重放分类 | 已验证 |
+| ready 只能从 `paid` 首次迁移，重复 ready 为 no-op | MongoDB 条件更新与重放分类 | 已验证 |
 | 同一支付消息重投不会重复改变订单终态 | 已支付时成功 no-op | 已验证 |
 | 支付事件不能更新另一客户的同 ID 订单 | `_id + customer_id` 条件 | 已验证 |
 | Payment、Order、Kitchen 一次 delivery 只 ACK 或 NACK | 显式分支与错误路径立即返回 | 已验证 |

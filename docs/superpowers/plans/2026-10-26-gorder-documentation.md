@@ -208,7 +208,7 @@ Expected: zero unresolved local targets.
 
 - [ ] **Step 5: Run source and content audits**
 
-Run: `rg -n "TP-?Link|Bybit|七牛|million|百万|千万|生产源码|真实生产" README.md docs`
+Run: `rg -n "former employer|前雇主|million|百万|千万|生产源码|真实生产" README.md docs`
 
 Expected: no proprietary claim, invented metric, or wording that confuses the reconstruction with production source.
 

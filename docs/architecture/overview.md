@@ -58,11 +58,11 @@ flowchart TB
     MQ --> Payment
     Payment -->|HTTPS API| Stripe
     Stripe -->|HTTP webhook :8284| Payment
-    Payment -->|gRPC UpdateOrder| Order
+    Payment -->|gRPC AttachPaymentSession| Order
     Payment -->|order.paid| MQ
     MQ --> Order
     MQ --> Kitchen
-    Kitchen -->|gRPC UpdateOrder| Order
+    Kitchen -->|gRPC MarkOrderReady| Order
 
     Order -. register / discover .-> Consul[Consul]
     Stock -. register .-> Consul
@@ -75,7 +75,7 @@ flowchart TB
 
 | 进程 | 当前职责 | 入口 | 下游依赖 | 状态存储 |
 |---|---|---|---|---|
-| Order Service | 创建、查询订单；处理通用更新；处理支付成功的受限状态迁移 | HTTP、gRPC、`order.paid` consumer | Stock gRPC、RabbitMQ、MongoDB | MongoDB `order.order` collection |
+| Order Service | 创建、查询订单；通过显式命令约束主流程状态迁移 | HTTP、gRPC、`order.paid` consumer | Stock gRPC、RabbitMQ、MongoDB | MongoDB `order.order` collection |
 | Stock Service | 读取库存数量；判断请求商品是否有足够库存；获取 Stripe Price ID | gRPC | MySQL、Stripe API | MySQL `o_stock` table |
 | Payment Service | 消费订单创建事件；创建支付链接；回写支付链接；验证 Stripe webhook 并发布支付结果 | `order.create` consumer、HTTP webhook | Order gRPC、Stripe、RabbitMQ | 没有本地业务数据库 |
 | Kitchen Worker | 消费已支付事件；等待模拟处理；把订单更新为 `ready` | `order.paid` consumer | Order gRPC、RabbitMQ | 没有本地业务数据库 |
@@ -90,8 +90,8 @@ flowchart TB
 | HTTP | Client → Order | 创建订单、按客户和订单 ID 查询订单 |
 | HTTP | Stripe → Payment | Stripe webhook；处理 `checkout.session.completed` |
 | gRPC | Order → Stock | `CheckIfItemsInStock`；另有 `GetItems` 契约但 repository 实现不完整 |
-| gRPC | Payment → Order | `UpdateOrder` 写入支付链接和状态 |
-| gRPC | Kitchen → Order | `UpdateOrder` 写入 `ready` |
+| gRPC | Payment → Order | `AttachPaymentSession` 挂接支付链接并推进预期状态 |
+| gRPC | Kitchen → Order | `MarkOrderReady` 从已支付状态推进 `ready` |
 | RabbitMQ | Order → Payment | `order.create` |
 | RabbitMQ | Payment → Order/Kitchen | `order.paid` |
 
@@ -103,7 +103,7 @@ flowchart TB
 | 选择 | 当前使用位置 | 获得的特性 | 当前代价 |
 |---|---|---|---|
 | 同步 HTTP | 客户下单/查询、Stripe webhook | 请求方立即得到处理结果 | 依赖下游响应；缺少统一鉴权和超时治理 |
-| 同步 gRPC | Order 查 Stock；Payment/Kitchen 更新 Order | 接口由 protobuf 定义，调用语义直接 | 运行时依赖 Consul 和目标进程；通用更新缺少状态前置条件 |
+| 同步 gRPC | Order 查 Stock；Payment/Kitchen 提交显式 Order 命令 | 接口由 protobuf 定义，调用语义与状态前置条件明确 | 运行时依赖 Consul 和目标进程；跨服务失败仍需重试/恢复 |
 | 异步 RabbitMQ | 创建订单后启动支付；支付后推进订单和履约 | 解耦调用时间，支持 Broker 重投和重试 | 至少一次投递要求 consumer 幂等；数据库与发布之间没有原子事务 |
 
 当前实现不是纯事件驱动架构：支付和履约仍通过同步 gRPC 回写 Order；也不是单体系统，因为
@@ -190,14 +190,14 @@ Compose **不包含** Order、Stock、Payment、Kitchen 业务容器，也不包
 
 - 以服务所有权拆分订单、库存、支付和履约；
 - 对外 HTTP、内部 gRPC、跨服务事件三类边界清晰；
-- 支付终态通过 repository 原子条件更新收敛，而不是只在 consumer 内存中去重；
+- 主流程三条状态迁移通过 repository 原子条件更新收敛，而不是只在 consumer 内存中判断；
 - 核心支付重投实验不依赖真实 MongoDB、RabbitMQ 或 Stripe，能够离线复现；
 - 把未实现能力保留为显式缺口，便于针对故障窗口逐步演进。
 
 ### 阅读其余文档时必须保留的约束
 
-- 只有支付终态幂等切片具有当前自动化证据，不能外推到全部业务流程；
-- 通用 `UpdateOrder` 与专用 `MarkPaid` 的并发语义不同；
+- 显式订单迁移与 consumer correctness 有当前自动化证据，不能外推到所有外部副作用；
+- 通用 `UpdateOrder` 已删除，但取消、退款、库存确认等完整流程状态仍未建模；
 - Stock 只检查当前数量，不拥有完整库存生命周期；
 - DB 写入和 RabbitMQ 发布之间没有 Outbox；
 - 当前项目是工程重建和设计验证，不是生产系统源码或生产就绪模板。

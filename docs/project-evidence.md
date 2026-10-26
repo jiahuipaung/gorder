@@ -33,6 +33,9 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 | 订单保存于 MongoDB | 当前实现 | Order Mongo repository 负责创建、读取和状态更新 |
 | 库存数量读取自 MySQL | 当前实现 | Stock repository 实现 `GetStock`；`GetItems` 仍未实现 |
 | 支付链接创建与 Stripe webhook 验签 | 当前实现 | Stripe adapter 与 webhook handler 已存在；离线测试使用 stripe-go 真实签名生成器，真实 Provider 集成不属于默认验证 |
+| `pending -> waiting_for_payment -> paid -> ready` 显式状态模型 | 已验证行为 | 三条 repository 条件更新、应用命令与 gRPC 端口测试覆盖首次迁移、重放与错误分类 |
+| 跨服务任意订单快照更新已移除 | 已验证行为 | protobuf、Payment/Kitchen adapter 与 Order repository 只暴露意图明确的写命令 |
+| Stripe Checkout 按订单 ID 幂等创建 | 已验证行为 | [Stripe params 测试](../internal/payment/infrastructure/processor/stripe_test.go)验证稳定非空幂等键；不等于本地 payment ledger |
 | `waiting_for_payment -> paid` 原子条件迁移 | 已验证行为 | [Mongo repository 测试](../internal/order/adapters/order_mongo_repository_test.go)验证条件更新；[内存 repository 测试](../internal/order/adapters/order_inmem_repository_test.go)验证状态语义 |
 | 重复支付消息成为成功 no-op | 已验证行为 | [应用命令测试](../internal/order/app/command/mark_order_paid_test.go)和 repository 测试覆盖顺序重放 |
 | 并发支付重放只发生一次状态变化 | 已验证行为 | [内存 repository 并发测试](../internal/order/adapters/order_inmem_repository_test.go)在 race detector 下运行 |
@@ -52,9 +55,10 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 | 自动对账与补偿 | 已知缺口 | 未实现订单、支付、库存之间的周期性核对与修复 |
 | 完整业务服务一键启动 | 已知缺口 | Compose 当前只编排基础设施，业务进程需要分别启动 |
 
-支付重投和 Consumer 正确性切片的命令、覆盖范围和限制详见
+支付重投、Consumer 正确性与显式状态迁移切片的命令、覆盖范围和限制详见
 [支付消息重复投递实验](experiments/payment-redelivery.md)与
-[Consumer correctness 实验](experiments/consumer-correctness.md)。
+[Consumer correctness 实验](experiments/consumer-correctness.md)、
+[显式订单迁移实验](experiments/explicit-order-transitions.md)。
 
 ## 可以公开说明的内容
 
@@ -65,6 +69,8 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 > `waiting_for_payment -> paid`，把重复支付事件处理为 no-op，并用并发测试和 race detector
 > 验证状态只变化一次。Payment、Order、Kitchen consumer 还通过显式终态分支保证已覆盖
 > 路径只 ACK 或 NACK 一次；retry 发布失败会 requeue 原消息，webhook 发布失败会返回 503。
+> 在此基础上，跨服务通用 `UpdateOrder` 已收口为显式命令，Order 用条件更新保护
+> `pending -> waiting_for_payment -> paid -> ready`，Stripe Checkout 重投以订单 ID 作为幂等键。
 
 也可以进一步说明：项目主动保留了 Outbox、持久化 Inbox、库存预占和对账作为演进项，并在
 文档中分析它们分别解决哪个失败窗口。
