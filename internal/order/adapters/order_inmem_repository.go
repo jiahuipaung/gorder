@@ -63,6 +63,35 @@ func (m *MemoryOrderRepository) Get(ctx context.Context, id, customerID string) 
 	return nil, domain.NotFoundError{OrderID: id}
 }
 
+func (m *MemoryOrderRepository) MarkPaid(
+	_ context.Context,
+	orderID, customerID, paymentLink string,
+) (bool, error) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	for _, current := range m.store {
+		if current.ID != orderID || current.CustomerID != customerID {
+			continue
+		}
+		if current.Status == domain.StatusPaid {
+			return false, nil
+		}
+		if current.Status != domain.StatusWaitingForPayment {
+			return false, domain.InvalidStatusTransitionError{
+				OrderID:       orderID,
+				CurrentStatus: current.Status,
+				TargetStatus:  domain.StatusPaid,
+			}
+		}
+		current.Status = domain.StatusPaid
+		current.PaymentLink = paymentLink
+		return true, nil
+	}
+
+	return false, domain.NotFoundError{OrderID: orderID}
+}
+
 func (m *MemoryOrderRepository) Update(ctx context.Context, o *domain.Order, updateFn func(context.Context, *domain.Order) (*domain.Order, error)) error {
 	m.lock.Lock()
 	defer m.lock.Unlock()
