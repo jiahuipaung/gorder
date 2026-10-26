@@ -11,8 +11,9 @@ type Application struct {
 }
 
 type Commands struct {
-	CreateOrder command.CreateOrderHandler
-	UpdateOrder command.UpdateOrderHandler
+	CreateOrder   command.CreateOrderHandler
+	UpdateOrder   command.UpdateOrderHandler
+	MarkOrderPaid command.MarkOrderPaidHandler
 }
 
 type Queries struct {

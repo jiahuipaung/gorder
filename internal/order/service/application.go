@@ -60,6 +60,11 @@ func newApplication(_ context.Context, stockGrpc query.StockService, channel *am
 				logger,
 				metricsClient,
 			),
+			MarkOrderPaid: command.NewMarkOrderPaidHandler(
+				orderRepo,
+				logger,
+				metricsClient,
+			),
 		},
 		Queries: app.Queries{
 			GetCustomerOrder: query.NewGetCustomerOrderHandler(
