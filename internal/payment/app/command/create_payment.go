@@ -33,14 +33,12 @@ func (c createPaymentHandler) Handler(ctx context.Context, cmd CreatePayment) (s
 		return "", err
 	}
 	logrus.Infof("create payment link for order: %s success, link:%s", cmd.Order.ID, link)
-	newOrder := &orderpb.Order{
-		ID:          cmd.Order.ID,
-		CustomerID:  cmd.Order.CustomerID,
-		Status:      "waiting_for_payment",
-		PaymentLink: link,
-		Items:       cmd.Order.Items,
-	}
-	if err = c.orderGrpc.UpdateOrder(ctx, newOrder); err != nil {
+	if err = c.orderGrpc.AttachPaymentSession(
+		ctx,
+		cmd.Order.ID,
+		cmd.Order.CustomerID,
+		link,
+	); err != nil {
 		return "", err
 	}
 	return link, nil

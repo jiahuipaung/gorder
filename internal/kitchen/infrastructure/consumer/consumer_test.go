@@ -5,19 +5,20 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type orderServiceStub struct {
-	err    error
-	calls  int
-	orders []*orderpb.Order
+	err         error
+	calls       int
+	orderIDs    []string
+	customerIDs []string
 }
 
-func (s *orderServiceStub) UpdateOrder(_ context.Context, order *orderpb.Order) error {
+func (s *orderServiceStub) MarkOrderReady(_ context.Context, orderID, customerID string) error {
 	s.calls++
-	s.orders = append(s.orders, order)
+	s.orderIDs = append(s.orderIDs, orderID)
+	s.customerIDs = append(s.customerIDs, customerID)
 	return s.err
 }
 
@@ -116,9 +117,8 @@ func TestHandleMessageCooksAndAcknowledgesPaidOrder(t *testing.T) {
 	if retryCalls != 0 {
 		t.Fatalf("expected retry not to run, got %d calls", retryCalls)
 	}
-	updated := orders.orders[0]
-	if updated.ID != "order-1" || updated.CustomerID != "customer-1" || updated.Status != "ready" || updated.PaymentLink != "payment-1" {
-		t.Fatalf("unexpected ready order: %+v", updated)
+	if orders.orderIDs[0] != "order-1" || orders.customerIDs[0] != "customer-1" {
+		t.Fatalf("unexpected ready order identity: order=%q customer=%q", orders.orderIDs[0], orders.customerIDs[0])
 	}
 	assertConfirmation(t, acks, 1, 0, nil)
 }

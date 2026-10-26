@@ -22,7 +22,7 @@ type Order struct {
 }
 
 type OrderService interface {
-	UpdateOrder(ctx context.Context, req *orderpb.Order) error
+	MarkOrderReady(ctx context.Context, orderID, customerID string) error
 }
 
 type Consumer struct {
@@ -84,13 +84,7 @@ func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Chann
 
 	c.cookHandler(o)
 	span.AddEvent(fmt.Sprintf("order_cook: %+v", o))
-	if err := c.orderGRPC.UpdateOrder(mqCtx, &orderpb.Order{
-		ID:          o.ID,
-		CustomerID:  o.CustomerID,
-		Status:      "ready",
-		PaymentLink: o.PaymentLink,
-		Items:       o.Items,
-	}); err != nil {
+	if err := c.orderGRPC.MarkOrderReady(mqCtx, o.ID, o.CustomerID); err != nil {
 		if err = c.retryHandler(mqCtx, ch, &msg); err != nil {
 			logrus.Warnf("kitchen: fail to updateOrder and handle retry, err=%v", err)
 			_ = msg.Nack(false, true)

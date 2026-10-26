@@ -16,11 +16,18 @@ func NewOrderGrpc(client orderpb.OrderServiceClient) *OrderGrpc {
 	return &OrderGrpc{client: client}
 }
 
-func (o *OrderGrpc) UpdateOrder(ctx context.Context, order *orderpb.Order) error {
-	ctx, span := tracing.Start(ctx, "OrderGrpc::UpdateOrder")
+func (o *OrderGrpc) AttachPaymentSession(
+	ctx context.Context,
+	orderID, customerID, paymentLink string,
+) error {
+	ctx, span := tracing.Start(ctx, "OrderGrpc::AttachPaymentSession")
 	defer span.End()
 
-	_, err := o.client.UpdateOrder(ctx, order)
-	logrus.Infof("payment_adapters.UpdateOrder.UpdateOrder err:%v", err)
+	_, err := o.client.AttachPaymentSession(ctx, &orderpb.AttachPaymentSessionRequest{
+		OrderID:     orderID,
+		CustomerID:  customerID,
+		PaymentLink: paymentLink,
+	})
+	logrus.Infof("payment_adapters.AttachPaymentSession err:%v", err)
 	return err
 }

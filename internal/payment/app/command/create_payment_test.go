@@ -22,14 +22,21 @@ func (s *processorStub) CreatePaymentLink(_ context.Context, order *orderpb.Orde
 }
 
 type orderServiceStub struct {
-	err    error
-	calls  int
-	orders []*orderpb.Order
+	err         error
+	calls       int
+	orderIDs    []string
+	customerIDs []string
+	links       []string
 }
 
-func (s *orderServiceStub) UpdateOrder(_ context.Context, order *orderpb.Order) error {
+func (s *orderServiceStub) AttachPaymentSession(
+	_ context.Context,
+	orderID, customerID, paymentLink string,
+) error {
 	s.calls++
-	s.orders = append(s.orders, order)
+	s.orderIDs = append(s.orderIDs, orderID)
+	s.customerIDs = append(s.customerIDs, customerID)
+	s.links = append(s.links, paymentLink)
 	return s.err
 }
 
@@ -71,7 +78,7 @@ func TestCreatePaymentReturnsProcessorErrorWithoutUpdatingOrder(t *testing.T) {
 	}
 }
 
-func TestCreatePaymentReturnsOrderUpdateError(t *testing.T) {
+func TestCreatePaymentReturnsAttachPaymentSessionError(t *testing.T) {
 	updateErr := errors.New("order service unavailable")
 	processor := &processorStub{link: "https://pay.example/session-1"}
 	orders := &orderServiceStub{err: updateErr}
@@ -88,7 +95,7 @@ func TestCreatePaymentReturnsOrderUpdateError(t *testing.T) {
 	}
 }
 
-func TestCreatePaymentUpdatesOrderAndReturnsLink(t *testing.T) {
+func TestCreatePaymentAttachesSessionAndReturnsLink(t *testing.T) {
 	link := "https://pay.example/session-1"
 	items := []*orderpb.Item{{ID: "item-1", Quantity: 2}}
 	processor := &processorStub{link: link}
@@ -115,17 +122,10 @@ func TestCreatePaymentUpdatesOrderAndReturnsLink(t *testing.T) {
 	if orders.calls != 1 {
 		t.Fatalf("expected order service once, got %d calls", orders.calls)
 	}
-	updated := orders.orders[0]
-	if updated.ID != order.ID || updated.CustomerID != order.CustomerID {
-		t.Fatalf("unexpected order identity: %+v", updated)
+	if orders.orderIDs[0] != order.ID || orders.customerIDs[0] != order.CustomerID {
+		t.Fatalf("unexpected order identity: order=%q customer=%q", orders.orderIDs[0], orders.customerIDs[0])
 	}
-	if updated.Status != "waiting_for_payment" {
-		t.Fatalf("expected waiting_for_payment status, got %q", updated.Status)
-	}
-	if updated.PaymentLink != link {
-		t.Fatalf("expected payment link %q, got %q", link, updated.PaymentLink)
-	}
-	if len(updated.Items) != 1 || updated.Items[0].ID != "item-1" || updated.Items[0].Quantity != 2 {
-		t.Fatalf("unexpected items: %+v", updated.Items)
+	if orders.links[0] != link {
+		t.Fatalf("expected payment link %q, got %q", link, orders.links[0])
 	}
 }
