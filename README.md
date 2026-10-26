@@ -65,6 +65,17 @@ make verify
 `internal/order/tests` 中另有一个需要完整本地服务的历史端到端测试，因此不属于默认的
 离线验证集合。
 
+## 深入阅读
+
+- [文档地图](docs/README.md)：按招聘浏览、架构讨论和本地验证选择阅读路径；
+- [系统架构总览](docs/architecture/overview.md)：服务职责、协议边界和运行拓扑；
+- [核心业务流程](docs/architecture/business-flow.md)：下单、支付和履约时序；
+- [数据所有权与状态模型](docs/architecture/data-and-state.md)：状态权威与迁移约束；
+- [可靠性模型](docs/architecture/reliability.md)：当前不变量、证据和失败窗口；
+- [架构演进路线](docs/architecture/evolution.md)：Inbox、Outbox、库存预占和对账如何分阶段落地；
+- [本地开发指南](docs/development/local-development.md)：环境、启动、验证和排障；
+- [证据与公开边界](docs/project-evidence.md)：区分源码事实、已验证行为、缺口和方案。
+
 ## 本地基础设施
 
 如需继续调试完整服务，可先启动依赖：
