@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	_ "github.com/jiahuipaung/gorder/common/config"
 	domain "github.com/jiahuipaung/gorder/order/domain/order"
 	"github.com/jiahuipaung/gorder/order/entity"
@@ -54,16 +55,60 @@ func (r *OrderRepositoryMongo) Create(ctx context.Context, order *domain.Order) 
 func (r *OrderRepositoryMongo) Get(ctx context.Context, id, customerID string) (got *domain.Order, err error) {
 	defer r.logWithTag("get", err, nil, got)
 	read := &orderModel{}
-	mongoID, _ := primitive.ObjectIDFromHex(id)
-	condition := bson.M{"_id": mongoID}
-	if err = r.collection().FindOne(ctx, condition).Decode(read); err != nil {
-		return
-	}
-	if read == nil {
+	mongoID, parseErr := primitive.ObjectIDFromHex(id)
+	if parseErr != nil {
 		return nil, domain.NotFoundError{OrderID: id}
+	}
+	condition := bson.M{"_id": mongoID, "customer_id": customerID}
+	if err = r.collection().FindOne(ctx, condition).Decode(read); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, domain.NotFoundError{OrderID: id}
+		}
+		return
 	}
 	got = r.unmarshal(read)
 	return
+}
+
+func (r *OrderRepositoryMongo) MarkPaid(
+	ctx context.Context,
+	orderID, customerID, paymentLink string,
+) (bool, error) {
+	mongoID, err := primitive.ObjectIDFromHex(orderID)
+	if err != nil {
+		return false, err
+	}
+	result, err := r.collection().UpdateOne(
+		ctx,
+		bson.M{
+			"_id":         mongoID,
+			"customer_id": customerID,
+			"status":      domain.StatusWaitingForPayment,
+		},
+		bson.M{"$set": bson.M{
+			"status":       domain.StatusPaid,
+			"payment_link": paymentLink,
+		}},
+	)
+	if err != nil {
+		return false, err
+	}
+	if result.ModifiedCount == 1 {
+		return true, nil
+	}
+
+	current, err := r.Get(ctx, orderID, customerID)
+	if err != nil {
+		return false, err
+	}
+	if current.Status == domain.StatusPaid {
+		return false, nil
+	}
+	return false, domain.InvalidStatusTransitionError{
+		OrderID:       orderID,
+		CurrentStatus: current.Status,
+		TargetStatus:  domain.StatusPaid,
+	}
 }
 
 // Update 先查找对应order，然后apply updateFn，再写入回去
