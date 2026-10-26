@@ -74,9 +74,9 @@ MarkPaid(ctx context.Context, orderID, customerID, paymentLink string) (changed 
 ```
 
 MongoDB uses one conditional `UpdateOne` filter containing order ID, customer ID,
-and `status != paid`. `ModifiedCount == 1` means the transition occurred. If no
-document changed, the repository reads the current order: already paid returns
-`false, nil`; a missing order or incompatible state returns an error.
+and `status == waiting_for_payment`. `ModifiedCount == 1` means the transition
+occurred. If no document changed, the repository reads the current order: already
+paid returns `false, nil`; a missing order or any other state returns an error.
 
 The in-memory repository implements the same contract under its mutex so command
 tests exercise real state transitions without MongoDB.
