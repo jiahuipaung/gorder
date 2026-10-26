@@ -66,6 +66,7 @@ func TestConsumerAcknowledgesSuccessfulPaidEventOnce(t *testing.T) {
 	require.Equal(t, 1, handler.calls)
 	require.Equal(t, 1, acknowledger.acks)
 	require.Zero(t, acknowledger.nacks)
+	require.Equal(t, 1, acknowledger.acks+acknowledger.nacks)
 }
 
 func TestConsumerNacksMalformedPayloadWithoutRequeue(t *testing.T) {
@@ -88,9 +89,45 @@ func TestConsumerNacksMalformedPayloadWithoutRequeue(t *testing.T) {
 	require.Zero(t, acknowledger.acks)
 	require.Equal(t, 1, acknowledger.nacks)
 	require.False(t, acknowledger.lastNackRequeue)
+	require.Equal(t, 1, acknowledger.acks+acknowledger.nacks)
 }
 
-func TestConsumerRetriesAndNacksHandlerErrorWithoutAcknowledging(t *testing.T) {
+func TestConsumerAcknowledgesOriginalAfterSuccessfulRetryHandoff(t *testing.T) {
+	t.Parallel()
+
+	handler := &fakeMarkOrderPaidHandler{err: errors.New("repository unavailable")}
+	retryCalls := 0
+	consumer := &Consumer{
+		app: app.Application{Commands: app.Commands{
+			MarkOrderPaid: handler,
+		}},
+		retry: func(_ context.Context, _ *amqp.Channel, _ *amqp.Delivery) error {
+			retryCalls++
+			return nil
+		},
+	}
+	acknowledger := &fakeAcknowledger{}
+	message := amqp.Delivery{
+		Acknowledger: acknowledger,
+		DeliveryTag:  1,
+		Body: []byte(`{
+			"ID":"order-1",
+			"CustomerID":"customer-1",
+			"Status":"paid",
+			"PaymentLink":"payment-link-1"
+		}`),
+	}
+
+	consumer.handleMessage(message, amqp.Queue{Name: "order.paid"}, nil)
+
+	require.Equal(t, 1, handler.calls)
+	require.Equal(t, 1, retryCalls)
+	require.Equal(t, 1, acknowledger.acks)
+	require.Zero(t, acknowledger.nacks)
+	require.Equal(t, 1, acknowledger.acks+acknowledger.nacks)
+}
+
+func TestConsumerRequeuesOriginalWhenRetryHandoffFails(t *testing.T) {
 	t.Parallel()
 
 	handler := &fakeMarkOrderPaidHandler{err: errors.New("repository unavailable")}
@@ -122,5 +159,6 @@ func TestConsumerRetriesAndNacksHandlerErrorWithoutAcknowledging(t *testing.T) {
 	require.Equal(t, 1, retryCalls)
 	require.Zero(t, acknowledger.acks)
 	require.Equal(t, 1, acknowledger.nacks)
-	require.False(t, acknowledger.lastNackRequeue)
+	require.True(t, acknowledger.lastNackRequeue)
+	require.Equal(t, 1, acknowledger.acks+acknowledger.nacks)
 }
