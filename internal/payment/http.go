@@ -20,11 +20,15 @@ import (
 )
 
 type PaymentHandler struct {
-	ch *amqp.Channel
+	publisher Publisher
 }
 
-func NewPaymentHandler(ch *amqp.Channel) *PaymentHandler {
-	return &PaymentHandler{ch: ch}
+type Publisher interface {
+	PublishWithContext(context.Context, string, string, bool, bool, amqp.Publishing) error
+}
+
+func NewPaymentHandler(publisher Publisher) *PaymentHandler {
+	return &PaymentHandler{publisher: publisher}
 }
 
 func (h *PaymentHandler) RegisterRoutes(c *gin.Engine) {
@@ -82,13 +86,17 @@ func (h *PaymentHandler) handleWebhook(c *gin.Context) {
 			mqCtx, span := t.Start(ctx, fmt.Sprintf("rabbitMQ.%s.publish", broker.EventOrderPaid))
 			defer span.End()
 			headers := broker.InjectRabbitMQHeader(mqCtx)
-			_ = h.ch.PublishWithContext(mqCtx, broker.EventOrderPaid, "", false, false,
+			if err := h.publisher.PublishWithContext(mqCtx, broker.EventOrderPaid, "", false, false,
 				amqp.Publishing{
 					ContentType:  "application/json",
 					Body:         marshalledOrder,
 					DeliveryMode: amqp.Persistent,
 					Headers:      headers,
-				})
+				}); err != nil {
+				logrus.Errorf("failed to publish message to %s: %v", broker.EventOrderPaid, err)
+				c.JSON(http.StatusServiceUnavailable, err.Error())
+				return
+			}
 			logrus.Infof("messgae published to %s , body :%s\n", broker.EventOrderPaid, string(marshalledOrder))
 		}
 	}
