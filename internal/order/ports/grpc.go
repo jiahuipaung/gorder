@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"order/convertor"
 
 	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
@@ -46,23 +47,51 @@ func (G GRPCServer) GetOrder(ctx context.Context, request *orderpb.GetOrderReque
 	return convertor.NewOrderConverter().EntityToProto(o), nil
 }
 
-func (G GRPCServer) UpdateOrder(ctx context.Context, request *orderpb.Order) (_ *emptypb.Empty, err error) {
-	logrus.Infof("order_grpc || request in || request=%+v", request)
-	order, err := domain.NewOrder(
-		request.CustomerID,
-		request.ID,
-		request.Status,
-		request.PaymentLink,
-		convertor.NewItemConvertor().ProtoToEntities(request.Items))
-	if err != nil {
-		err = status.Error(codes.Internal, err.Error())
-		return
+func (G GRPCServer) AttachPaymentSession(
+	ctx context.Context,
+	request *orderpb.AttachPaymentSessionRequest,
+) (*emptypb.Empty, error) {
+	logrus.Infof("order_grpc.AttachPaymentSession request=%+v", request)
+	if request == nil || request.OrderID == "" || request.CustomerID == "" || request.PaymentLink == "" {
+		return nil, status.Error(codes.InvalidArgument, "order ID, customer ID, and payment link are required")
 	}
-	_, err = G.app.Commands.UpdateOrder.Handler(ctx, command.UpdateOrder{
-		Order: order,
-		UpdateFn: func(ctx context.Context, order *domain.Order) (*domain.Order, error) {
-			return order, nil
-		},
+	_, err := G.app.Commands.AttachPaymentSession.Handler(ctx, command.AttachPaymentSession{
+		OrderID:     request.OrderID,
+		CustomerID:  request.CustomerID,
+		PaymentLink: request.PaymentLink,
 	})
-	return
+	if err != nil {
+		return nil, orderCommandStatus(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func (G GRPCServer) MarkOrderReady(
+	ctx context.Context,
+	request *orderpb.MarkOrderReadyRequest,
+) (*emptypb.Empty, error) {
+	logrus.Infof("order_grpc.MarkOrderReady request=%+v", request)
+	if request == nil || request.OrderID == "" || request.CustomerID == "" {
+		return nil, status.Error(codes.InvalidArgument, "order ID and customer ID are required")
+	}
+	_, err := G.app.Commands.MarkOrderReady.Handler(ctx, command.MarkOrderReady{
+		OrderID:    request.OrderID,
+		CustomerID: request.CustomerID,
+	})
+	if err != nil {
+		return nil, orderCommandStatus(err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+func orderCommandStatus(err error) error {
+	var notFound domain.NotFoundError
+	if errors.As(err, &notFound) {
+		return status.Error(codes.NotFound, err.Error())
+	}
+	var invalidTransition domain.InvalidStatusTransitionError
+	if errors.As(err, &invalidTransition) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return status.Error(codes.Internal, err.Error())
 }

@@ -11,9 +11,10 @@ type Application struct {
 }
 
 type Commands struct {
-	CreateOrder   command.CreateOrderHandler
-	UpdateOrder   command.UpdateOrderHandler
-	MarkOrderPaid command.MarkOrderPaidHandler
+	CreateOrder          command.CreateOrderHandler
+	AttachPaymentSession command.AttachPaymentSessionHandler
+	MarkOrderPaid        command.MarkOrderPaidHandler
+	MarkOrderReady       command.MarkOrderReadyHandler
 }
 
 type Queries struct {

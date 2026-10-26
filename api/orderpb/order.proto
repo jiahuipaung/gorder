@@ -8,7 +8,8 @@ import "google/protobuf/empty.proto";
 service OrderService {
   rpc CreateOrder(CreateOrderRequest) returns (google.protobuf.Empty);
   rpc GetOrder(GetOrderRequest) returns (Order);
-  rpc UpdateOrder(Order) returns (google.protobuf.Empty);
+  rpc AttachPaymentSession(AttachPaymentSessionRequest) returns (google.protobuf.Empty);
+  rpc MarkOrderReady(MarkOrderReadyRequest) returns (google.protobuf.Empty);
 }
 
 message CreateOrderRequest {
@@ -37,6 +38,17 @@ message Order {
 }
 
 message GetOrderRequest {
+  string OrderID = 1;
+  string CustomerID = 2;
+}
+
+message AttachPaymentSessionRequest {
+  string OrderID = 1;
+  string CustomerID = 2;
+  string PaymentLink = 3;
+}
+
+message MarkOrderReadyRequest {
   string OrderID = 1;
   string CustomerID = 2;
 }
