@@ -304,4 +304,3 @@ git diff --check
 - [可靠性模型](../architecture/reliability.md)中的失败窗口是否已经关闭；
 - [架构演进路线](../architecture/evolution.md)中的 proposal 是否能移动到“当前实现/已验证”；
 - README 是否仍保持三分钟可读，而不是复制全部技术细节。
-

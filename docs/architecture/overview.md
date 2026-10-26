@@ -204,4 +204,3 @@ Compose **不包含** Order、Stock、Payment、Kitchen 业务容器，也不包
 
 下一步可阅读[核心业务流程](business-flow.md)了解调用顺序，或直接进入
 [可靠性模型](reliability.md)分析失败窗口。
-

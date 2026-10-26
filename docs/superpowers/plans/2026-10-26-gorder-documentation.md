@@ -235,4 +235,3 @@ git add README.md docs
 git commit -m "docs: complete gorder engineering handbook"
 git push
 ```
-

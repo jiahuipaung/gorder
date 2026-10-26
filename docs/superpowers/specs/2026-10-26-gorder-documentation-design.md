@@ -125,4 +125,3 @@
 - 文档不包含公司专有信息、真实密钥或未经证明的规模指标；
 - `make verify`、`docker compose config --quiet`、`git diff --check` 全部通过；
 - 改动提交并推送到现有 `codex/payment-idempotency` PR。
-

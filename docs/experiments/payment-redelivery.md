@@ -1,5 +1,7 @@
 # 支付消息重复投递实验
 
+[返回文档地图](../README.md) · [可靠性模型](../architecture/reliability.md)
+
 ## 问题与故障窗口
 
 RabbitMQ 使用手动确认时，消费者可能已经完成订单更新，但在 ACK 到达 Broker
