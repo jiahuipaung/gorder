@@ -18,7 +18,7 @@ lint:
 	@./scripts/lint.sh
 
 .PHONY: verify
-verify: verify-modules verify-payment-redelivery
+verify: verify-modules verify-order-reliability
 
 .PHONY: verify-modules
 verify-modules:
@@ -27,7 +27,7 @@ verify-modules:
 	cd internal/stock && go test -count=1 ./...
 	cd internal/kitchen && go test -count=1 ./...
 
-.PHONY: verify-payment-redelivery
-verify-payment-redelivery:
+.PHONY: verify-order-reliability
+verify-order-reliability:
 	cd internal/order && go test -count=1 -race \
-		./adapters ./app/command ./domain/order ./infrastructure/consumer
+		./adapters ./app/command ./domain/order ./infrastructure/consumer ./ports

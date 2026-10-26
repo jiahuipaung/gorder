@@ -133,7 +133,7 @@ func (r *OrderRepositoryMongo) transitionStatus(
 ) (bool, error) {
 	mongoID, err := primitive.ObjectIDFromHex(orderID)
 	if err != nil {
-		return false, err
+		return false, domain.NotFoundError{OrderID: orderID}
 	}
 	result, err := r.collection().UpdateOne(
 		ctx,

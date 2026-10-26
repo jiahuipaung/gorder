@@ -80,6 +80,24 @@ func TestOrderRepositoryMongoMarkReadyUsesConditionalUpdate(t *testing.T) {
 	})
 }
 
+func TestOrderRepositoryMongoTransitionTreatsMalformedOrderIDAsNotFound(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("malformed public order id does not become an infrastructure error", func(mt *mtest.T) {
+		repo := NewOrderRepositoryMongo(mt.Client)
+
+		changed, err := repo.AttachPaymentSession(
+			context.Background(),
+			"not-an-object-id",
+			"customer-1",
+			"checkout-link-1",
+		)
+
+		require.False(t, changed)
+		var notFound domain.NotFoundError
+		require.ErrorAs(t, err, &notFound)
+	})
+}
+
 func TestOrderRepositoryMongoMarkPaidUsesConditionalUpdate(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("one waiting order is changed", func(mt *mtest.T) {
