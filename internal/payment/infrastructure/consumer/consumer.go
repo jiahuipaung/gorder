@@ -15,12 +15,16 @@ import (
 )
 
 type Consumer struct {
-	app app.Application
+	app          app.Application
+	retryHandler RetryHandler
 }
+
+type RetryHandler func(context.Context, *amqp.Channel, *amqp.Delivery) error
 
 func NewConsumer(app app.Application) *Consumer {
 	return &Consumer{
-		app: app,
+		app:          app,
+		retryHandler: broker.HandleRetry,
 	}
 }
 
@@ -49,13 +53,17 @@ func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Chann
 	if err := json.Unmarshal(msg.Body, o); err != nil {
 		logrus.Warnf("fail to unmarshal msg to order, err=%v", err)
 		_ = msg.Nack(false, false)
+		return
 	}
 	if _, err := c.app.Commands.CreatePayment.Handler(ctx, command.CreatePayment{Order: o}); err != nil {
 		logrus.Warnf("fail to create payment, err=%v", err)
-		if err = broker.HandleRetry(ctx, ch, &msg); err != nil {
+		if err = c.retryHandler(ctx, ch, &msg); err != nil {
 			logrus.Warnf("error handle retry, messageID:%s, err=%v", msg.MessageId, err)
+			_ = msg.Nack(false, true)
+			return
 		}
-		_ = msg.Nack(false, false)
+		_ = msg.Ack(false)
+		return
 	}
 	span.AddEvent("payment created")
 	_ = msg.Ack(false)
