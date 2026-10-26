@@ -5,7 +5,8 @@ GOrder 是一个使用 Go 构建的订单、库存、支付与履约服务示例
 外部支付平台无法共享事务时，怎样守住业务状态的一致性边界。
 
 > 项目状态：可验证的工程作品，不是生产系统源码。当前已经闭环的是支付消息重复投递下
-> 的订单终态幂等；Outbox、通用 Inbox 和库存预占仍是明确保留的演进项。
+> 的订单终态幂等，以及 Payment、Order、Kitchen 三个 consumer 的单一确认终态与 webhook
+> 发布失败反馈；Outbox、通用 Inbox、publisher confirms 和库存预占仍是明确保留的演进项。
 
 ## 核心问题
 
@@ -16,7 +17,9 @@ GOrder 是一个使用 Go 构建的订单、库存、支付与履约服务示例
 
 当前实现把订单状态迁移的正确性放在持久化层：只有
 `waiting_for_payment -> paid` 能通过原子条件更新；重复支付消息返回成功 no-op，且一条
-delivery 只会进入 ACK 或 NACK 其中一条路径。
+delivery 只会进入 ACK 或 NACK 其中一条路径。下游处理失败时，retry/DLQ 交接成功才 ACK
+原消息；交接失败则 NACK 并请求 requeue。这个规则避免当前进程主动丢弃唯一副本，但没有
+publisher confirms，不能据此宣称端到端零丢失。
 
 ## 架构
 
@@ -57,10 +60,11 @@ make verify
 
 - 编译并测试 Common、Payment、Stock 和 Kitchen 模块；
 - 对支付重投涉及的 Order 包运行测试与 race detector；
-- 验证首次支付、重复投递、并发重放、租户隔离和 ACK/NACK 互斥。
+- 验证首次支付、重复投递、并发重放、租户隔离和三个 consumer 的 ACK/NACK 互斥；
+- 使用真实 Stripe 测试签名验证 webhook 发布成功、发布失败和非法签名分支。
 
-详细实验说明见
-[支付消息重复投递：原子状态迁移与 ACK/NACK 互斥](docs/experiments/payment-redelivery.md)。
+详细实验说明见[支付消息重复投递：原子状态迁移与 ACK/NACK 互斥](docs/experiments/payment-redelivery.md)
+和 [Consumer correctness：单一确认终态与 webhook 发布反馈](docs/experiments/consumer-correctness.md)。
 
 `internal/order/tests` 中另有一个需要完整本地服务的历史端到端测试，因此不属于默认的
 离线验证集合。
@@ -114,8 +118,11 @@ docs/experiments/    可复现的故障场景与证据边界
 |---|---|
 | 订单支付终态原子迁移 | 已实现并有单元/并发测试 |
 | 重复支付消息成为 no-op | 已实现并有顺序、并发重放测试 |
-| ACK/NACK 路径互斥 | 已实现并有错误路径测试 |
+| Payment、Order、Kitchen ACK/NACK 路径互斥 | 已实现并有成功、非法消息和 retry 错误路径测试 |
+| Payment command 下游错误传播 | 已实现；nil order、Stripe error 和 Order gRPC error 有测试 |
+| Stripe webhook publish 失败反馈 | 已实现；publish error 返回 HTTP 503，成功才返回 200 |
 | 服务骨架与本地基础设施 | 已实现；支持继续调试，不宣称生产就绪 |
+| RabbitMQ publisher confirms | 未实现；publish 返回 nil 不等于 Broker 已持久化 |
 | 稳定 Provider event ID + 持久化 Inbox | 未实现 |
 | 订单落库与发消息的 Transactional Outbox | 未实现 |
 | 库存预占、确认、释放和超时回收 | 未实现 |

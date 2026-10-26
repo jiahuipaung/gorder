@@ -2,9 +2,10 @@
 
 [返回文档地图](../README.md) · [可靠性模型](reliability.md)
 
-本文全部内容都是**演进方案，当前尚未实现**。路线按“先关闭已知失败窗口，再增加系统
-复杂度”的顺序组织，不以堆叠中间件为目标。每个阶段必须同时交付实现、故障测试和可观测
-证据，才可以更新[能力矩阵](../project-evidence.md)。
+本文记录从当前实现继续演进的路线。**P0 Consumer correctness 已实现并有离线测试；P1-P6
+仍是演进方案，当前尚未实现。** 路线按“先关闭已知失败窗口，再增加系统复杂度”的顺序
+组织，不以堆叠中间件为目标。每个后续阶段必须同时交付实现、故障测试和可观测证据，才
+可以更新[能力矩阵](../project-evidence.md)。
 
 ## 1. 演进原则
 
@@ -30,7 +31,7 @@ flowchart LR
 
 阶段可以在一个仓库中逐步完成，不需要一开始就拆出完整平台或引入大型 workflow engine。
 
-## 3. P0：修复 Consumer 控制流和错误传播
+## 3. P0：修复 Consumer 控制流和错误传播（已实现）
 
 ### 要解决的问题
 
@@ -40,27 +41,35 @@ flowchart LR
 - webhook 忽略 RabbitMQ publish error 后返回 200；
 - ACK、NACK 和 publish error 缺少结构化分类。
 
-### 方案
+### 已实现方案
 
-- 为每个 consumer 规定一个 terminal outcome：`ACK`、`RETRY_PUBLISHED_AND_NACKED`、
-  `DEAD_LETTERED_AND_NACKED` 或 `NACKED_INVALID`；
-- 错误路径立即 return，确认操作集中在一处；
-- `CreatePayment` 原样返回 Order gRPC error；
-- webhook 只有在支付结果被可靠持久化后才返回 2xx；在 P1/P2 落地前，publish 失败至少返回
-  可重试的 5xx；
-- 把 transient、permanent、invalid-message 错误分开，避免所有错误使用同一重试策略。
+- 每个 consumer 通过显式分支选择一个 terminal outcome：成功处理或 retry/DLQ 交接成功时
+  ACK；畸形消息和明确判定的 Kitchen 非 `paid` 消息 `Nack(requeue=false)`；retry 交接失败时
+  `Nack(requeue=true)`；
+- 错误路径立即 return，同一 delivery 不会先 NACK 再 ACK；
+- `CreatePayment` 对 nil order 返回 error，并原样返回 Stripe 与 Order gRPC error；
+- webhook 只有 RabbitMQ `PublishWithContext` 返回 nil 才返回 2xx，publish error 返回 HTTP
+  503；
+- 通过窄 `RetryHandler`、`Publisher`、`CookHandler` seam 在无 live Broker/Stripe 的测试中
+  覆盖错误路径。
+
+错误分类仍不完整：除畸形 JSON 和 Kitchen 非 `paid` 消息外，当前业务/基础设施错误仍主要
+共用 retry 策略。该限制留在后续事件契约和重试策略演进中。
 
 ### 不解决什么
 
 P0 只让错误语义可预测，仍不能消除 DB/MQ 双写，也不能防止 Stripe Checkout 或 Kitchen
-副作用重复。
+副作用重复。由于没有 publisher confirms，publish 调用返回 nil 也不是 Broker 已持久化的
+端到端证明。
 
-### 验收证据
+### 当前验收证据
 
 - Payment、Order、Kitchen 每条 consumer 分支都有 ACK/NACK 调用次数测试；
 - Order gRPC 失败会到达 retry 分支；
 - RabbitMQ publish 失败时 webhook 返回非 2xx；
 - 无 live Broker 的单元测试能复现所有分支。
+
+复现步骤见 [Consumer correctness 实验](../experiments/consumer-correctness.md)。
 
 ## 4. P1：稳定事件契约与持久化 Inbox
 

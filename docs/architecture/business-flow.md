@@ -110,9 +110,18 @@ sequenceDiagram
     OrderGRPC->>Mongo: generic Update
     Mongo-->>OrderGRPC: success or error
     OrderGRPC-->>PaymentApp: success or error
-    Note over PaymentApp: 当前实现未向 consumer 返回 gRPC error
-    PaymentApp-->>Consumer: URL + nil error
-    Consumer->>MQ: ACK
+    alt Stripe 与 Order 更新都成功
+        PaymentApp-->>Consumer: URL + nil error
+        Consumer->>MQ: ACK
+    else 任一步失败
+        PaymentApp-->>Consumer: error
+        Consumer->>MQ: retry/DLQ publish
+        alt retry publish 成功
+            Consumer->>MQ: ACK original
+        else retry publish 失败
+            Consumer->>MQ: NACK original, requeue=true
+        end
+    end
 ```
 
 Stripe Checkout Session metadata 保存 `orderID`、`customerID`、商品 JSON、创建会话时看到的状态
@@ -124,25 +133,25 @@ status = waiting_for_payment
 payment_link = Stripe Checkout URL
 ```
 
-### 3.2 Consumer 控制流缺口
+### 3.2 Consumer 当前确认语义
 
-Payment consumer 当前在以下两条错误路径中执行 `Nack`，但没有立即 `return`：
+Payment consumer 已把每条 delivery 收敛为一个显式终态：
 
-- `order.create` JSON 解析失败；
-- `CreatePayment` 返回错误，并完成重试发布或 DLQ 发布后。
+- JSON 解析失败：`Nack(requeue=false)` 后立即返回；
+- `CreatePayment` 成功：ACK；
+- command 失败且 retry/DLQ publish 成功：ACK 原 delivery，由替代消息接管；
+- command 失败且 retry/DLQ publish 失败：`Nack(requeue=true)`，保留原 delivery。
 
-函数随后仍会继续执行 `Ack`。因此该 consumer **不具备** ACK/NACK 互斥保证，可能对同一
-delivery 先 NACK 再 ACK。Order 支付结果 consumer 的互斥修复不能外推到这里。
-
-此外，`CreatePayment` 虽然接收到了 Order gRPC 的返回错误，却最终固定返回 `link, nil`。
-因此“支付会话已创建但订单支付链接回写失败”不会进入 consumer 的重试分支，而会被当作
-成功 ACK。这会使 Provider 已存在可支付会话，而本地订单仍保留旧状态和空支付链接。
+`CreatePayment` 对 nil order 立即返回错误，Stripe error 与 Order gRPC error 都会继续返回给
+consumer，不再把“支付会话已创建但订单链接回写失败”误报为成功。单元测试覆盖上述分支，
+但 retry publish 尚未启用 publisher confirms，因此 helper 返回 nil 仍不等于已经获得 Broker
+持久化确认。
 
 ### 3.3 其他失败窗口
 
 | 位置 | 当前结果 | 风险 |
 |---|---|---|
-| Stripe 已创建 Checkout Session，Order gRPC 回写失败 | `CreatePayment` 仍返回 `nil` error，consumer ACK | Provider 与本地订单立即产生状态分叉 |
+| Stripe 已创建 Checkout Session，Order gRPC 回写失败 | error 到达 consumer，并进入 retry/DLQ 交接 | 重试可能再次创建 Checkout Session；没有 Payment 记录或幂等键吸收外部副作用 |
 | Payment 在 gRPC 成功后、ACK 前退出 | Broker 重投 | 再次创建支付链接并覆盖旧链接 |
 | 通用 `UpdateOrder` 与其他更新并发 | 读取后按 ID/客户 ID 写入，无版本前置条件 | 较晚写入可能覆盖较新的状态或支付链接 |
 | Stripe metadata 构造 | 使用创建 Checkout 前收到的订单字段 | metadata 中 `paymentLink` 是旧值，通常为空 |
@@ -181,7 +190,12 @@ sequenceDiagram
         OrderConsumer->>MQ: ACK
     else 非法旧状态/不存在/存储错误
         OrderApp-->>OrderConsumer: error
-        OrderConsumer->>MQ: retry publish or DLQ, then NACK original
+        OrderConsumer->>MQ: retry publish or DLQ
+        alt retry publish 成功
+            OrderConsumer->>MQ: ACK original
+        else retry publish 失败
+            OrderConsumer->>MQ: NACK original, requeue=true
+        end
     end
 ```
 
@@ -202,7 +216,8 @@ status = waiting_for_payment
 - 顺序重复投递返回成功 no-op；
 - 并发重放只有一个调用观察到真实变化，并在 race detector 下运行；
 - `order_id + customer_id` 一起限制更新目标；
-- Order consumer 成功只 ACK，解析失败或 handler 失败只 NACK。
+- Order consumer 成功只 ACK，解析失败只 NACK；handler 失败后根据 retry 交接结果 ACK 或
+  requeue NACK，且每条路径只有一个确认调用。
 
 可复现命令和测试范围见[支付消息重复投递实验](../experiments/payment-redelivery.md)。
 
@@ -211,7 +226,8 @@ status = waiting_for_payment
 | 位置 | 当前结果 | 风险 |
 |---|---|---|
 | Stripe event ID | 未写入 `order.paid` 消息，也没有持久化 Inbox | 只能依赖状态迁移吸收这一种重复副作用，不能审计每个 Provider event |
-| RabbitMQ publish 返回错误 | 返回值被忽略 | webhook 仍返回 HTTP 200，Stripe 不会因该响应主动重试，支付结果可能永久丢失 |
+| RabbitMQ publish 返回错误 | webhook 返回 HTTP 503 | 允许 Stripe 按 Provider 策略重试；但没有本地 event ledger/Outbox，恢复仍依赖外部重试 |
+| RabbitMQ publish 返回 nil 但消息未被 Broker 持久化 | 当前没有 publisher confirms | webhook 返回 HTTP 200 后仍存在不可证明的丢失窗口 |
 | metadata `paymentLink` | 来自创建会话前的订单快照 | paid event 通常携带空链接，`MarkPaid` 可能覆盖已经保存的支付链接 |
 | metadata 商品 JSON | 序列化的是 Stripe line item params，再反序列化为 order protobuf item | 字段模型不完全对应，履约消息中的商品信息可能不完整 |
 | 其他 Stripe event type / 未 paid session | 返回 HTTP 200，不发布业务事件 | 这是当前筛选策略，不是完整支付状态机 |
@@ -236,9 +252,9 @@ sequenceDiagram
     else update fails
         Kitchen->>MQ: retry publish or DLQ
         alt retry publish succeeds
-            Kitchen->>MQ: defer ACK original
+            Kitchen->>MQ: ACK original
         else retry publish fails
-            Kitchen->>MQ: defer NACK original
+            Kitchen->>MQ: NACK original, requeue=true
         end
     end
 ```
@@ -251,9 +267,9 @@ Kitchen 是演示性的履约 worker，不代表真实仓储、发货或制作�
 - 若执行完 `cook` 后、Order gRPC 成功前后发生重投，模拟副作用会再次执行；
 - 通用 `UpdateOrder` 没有要求旧状态必须为 `paid`，也没有版本条件；
 - `ready` 在 Kitchen 中以字符串写入，但 Order domain 没有对应常量或正式迁移方法；
-- JSON 解析失败时函数会先显式 NACK，defer 中又依据错误再次 NACK，存在重复确认调用；
-- Order gRPC 失败后，defer 最终 ACK 还是 NACK 取决于 `HandleRetry` 是否成功，因为重试结果
-  覆盖了原始业务错误；
+- JSON 解析失败或状态不是 `paid` 时只执行一次 `Nack(requeue=false)`，不会 cook 或调用 gRPC；
+- Order gRPC 失败后，retry 交接成功 ACK 原 delivery，交接失败 NACK 并 requeue；这修复了确认
+  控制流，但不解决 `cook` 已经发生后的副作用重复；
 - Kitchen 使用 server-named fanout queue，运行期行为依赖 RabbitMQ 声明与绑定成功。
 
 ## 6. 跨流程不变量
@@ -265,10 +281,10 @@ Kitchen 是演示性的履约 worker，不代表真实仓储、发货或制作�
 | 支付终态只能从 `waiting_for_payment` 首次迁移到 `paid` | MongoDB 条件更新 | 已验证 |
 | 同一支付消息重投不会重复改变订单终态 | 已支付时成功 no-op | 已验证 |
 | 支付事件不能更新另一客户的同 ID 订单 | `_id + customer_id` 条件 | 已验证 |
-| Order 支付 consumer 一次 delivery 只 ACK 或 NACK | 错误路径立即返回 | 已验证 |
+| Payment、Order、Kitchen 一次 delivery 只 ACK 或 NACK | 显式分支与错误路径立即返回 | 已验证 |
 | 创建订单后一定启动支付 | 无对应机制 | 不成立：存在 DB/MQ 双写窗口 |
 | 有库存检查成功后一定能履约 | 无预占或扣减 | 不成立 |
-| Provider 已支付一定反映到订单 | publish error 被忽略且无对账 | 不成立 |
+| Provider 已支付一定反映到订单 | publish error 返回 503，但无本地 ledger/Outbox/对账且无 confirms | 仍不成立 |
 | 履约副作用只执行一次 | 无履约 Inbox/记录 | 不成立 |
 
 这些不变量和失败窗口会在[可靠性模型](reliability.md)中进一步按“机制—证据—剩余风险”

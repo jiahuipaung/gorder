@@ -275,7 +275,8 @@ curl 'http://127.0.0.1:8282/api/customer/customer-demo/orders/ORDER_ID'
 - Product ID 必须属于同一个 test account，并拥有 default Price；
 - webhook signature 失败会返回 HTTP 400；
 - webhook body 超过 64 KiB 或无法读取会返回错误；
-- 当前 publish error 被忽略的问题记录在[可靠性模型](../architecture/reliability.md)。
+- RabbitMQ publish 返回 error 时 webhook 返回 HTTP 503；当前仍没有 publisher confirms、
+  Payment event ledger 或 Outbox，边界记录在[可靠性模型](../architecture/reliability.md)。
 
 ### RabbitMQ 消息没有推进流程
 

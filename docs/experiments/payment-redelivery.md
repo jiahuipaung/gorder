@@ -28,7 +28,8 @@ MongoDB 以单文档条件更新作为原子边界：过滤条件同时包含订
 ```text
 JSON 不合法   -> Nack(requeue=false) -> return
 命令成功      -> Ack                 -> return
-命令失败      -> retry -> Nack       -> return
+命令失败      -> retry publish 成功 -> Ack original -> return
+命令失败      -> retry publish 失败 -> Nack(requeue=true) -> return
 ```
 
 ## 可复现验证
@@ -58,7 +59,8 @@ ok   order/infrastructure/consumer
 - Mongo 更新过滤器包含订单、客户和原状态三个条件；
 - 非 `paid` 事件不会修改订单；
 - 成功、畸形消息、处理错误分别只触发预期的 ACK/NACK 路径；
-- 处理失败时即使 retry 函数自身报错，也不会继续 ACK 原消息。
+- 处理失败时 retry 交接成功会 ACK 原消息，retry 函数自身报错则 NACK 并 requeue 原消息；两条
+  路径都只有一个确认调用。
 
 ## 证据边界
 
