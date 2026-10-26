@@ -86,7 +86,7 @@ func HandleRetry(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery) error 
 			DeliveryMode: amqp.Persistent,
 		})
 	}
-	logrus.Infof("retring message %s, count=%s", d.MessageId, retryCount)
+	logrus.Infof("retrying message %s, count=%d", d.MessageId, retryCount)
 	time.Sleep(time.Duration(retryCount) * time.Second)
 	return ch.PublishWithContext(ctx, d.Exchange, d.RoutingKey, false, false, amqp.Publishing{
 		Headers:      d.Headers,
