@@ -12,6 +12,74 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/integration/mtest"
 )
 
+func TestOrderRepositoryMongoAttachPaymentSessionUsesConditionalUpdate(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("one pending order is changed", func(mt *mtest.T) {
+		previousDBName, previousCollName := dbName, collName
+		dbName, collName = mt.DB.Name(), mt.Coll.Name()
+		defer func() { dbName, collName = previousDBName, previousCollName }()
+
+		mt.AddMockResponses(mtest.CreateSuccessResponse(
+			bson.E{Key: "n", Value: int32(1)},
+			bson.E{Key: "nModified", Value: int32(1)},
+		))
+
+		orderID := primitive.NewObjectID()
+		repo := NewOrderRepositoryMongo(mt.Client)
+		changed, err := repo.AttachPaymentSession(
+			context.Background(),
+			orderID.Hex(),
+			"customer-1",
+			"checkout-link-1",
+		)
+		require.NoError(t, err)
+		require.True(t, changed)
+
+		started := mt.GetStartedEvent()
+		require.Equal(t, "update", started.CommandName)
+		updates, err := started.Command.Lookup("updates").Array().Values()
+		require.NoError(t, err)
+		filter := updates[0].Document().Lookup("q").Document()
+		require.Equal(t, orderID, filter.Lookup("_id").ObjectID())
+		require.Equal(t, "customer-1", filter.Lookup("customer_id").StringValue())
+		require.Equal(t, domain.StatusPending, filter.Lookup("status").StringValue())
+
+		set := updates[0].Document().Lookup("u").Document().Lookup("$set").Document()
+		require.Equal(t, domain.StatusWaitingForPayment, set.Lookup("status").StringValue())
+		require.Equal(t, "checkout-link-1", set.Lookup("payment_link").StringValue())
+	})
+}
+
+func TestOrderRepositoryMongoMarkReadyUsesConditionalUpdate(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("one paid order is changed", func(mt *mtest.T) {
+		previousDBName, previousCollName := dbName, collName
+		dbName, collName = mt.DB.Name(), mt.Coll.Name()
+		defer func() { dbName, collName = previousDBName, previousCollName }()
+
+		mt.AddMockResponses(mtest.CreateSuccessResponse(
+			bson.E{Key: "n", Value: int32(1)},
+			bson.E{Key: "nModified", Value: int32(1)},
+		))
+
+		orderID := primitive.NewObjectID()
+		repo := NewOrderRepositoryMongo(mt.Client)
+		changed, err := repo.MarkReady(context.Background(), orderID.Hex(), "customer-1")
+		require.NoError(t, err)
+		require.True(t, changed)
+
+		started := mt.GetStartedEvent()
+		updates, err := started.Command.Lookup("updates").Array().Values()
+		require.NoError(t, err)
+		filter := updates[0].Document().Lookup("q").Document()
+		require.Equal(t, orderID, filter.Lookup("_id").ObjectID())
+		require.Equal(t, "customer-1", filter.Lookup("customer_id").StringValue())
+		require.Equal(t, domain.StatusPaid, filter.Lookup("status").StringValue())
+		set := updates[0].Document().Lookup("u").Document().Lookup("$set").Document()
+		require.Equal(t, domain.StatusReady, set.Lookup("status").StringValue())
+	})
+}
+
 func TestOrderRepositoryMongoMarkPaidUsesConditionalUpdate(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	mt.Run("one waiting order is changed", func(mt *mtest.T) {

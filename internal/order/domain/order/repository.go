@@ -8,11 +8,9 @@ import (
 type Repository interface {
 	Create(context.Context, *Order) (*Order, error)
 	Get(ctx context.Context, id, customerID string) (*Order, error)
+	AttachPaymentSession(ctx context.Context, orderID, customerID, paymentLink string) (bool, error)
 	MarkPaid(ctx context.Context, orderID, customerID, paymentLink string) (bool, error)
-	Update(ctx context.Context,
-		o *Order,
-		updateFn func(context.Context, *Order) (*Order, error),
-	) error
+	MarkReady(ctx context.Context, orderID, customerID string) (bool, error)
 }
 
 type InvalidStatusTransitionError struct {

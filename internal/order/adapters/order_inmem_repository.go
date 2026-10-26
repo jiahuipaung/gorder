@@ -63,6 +63,35 @@ func (m *MemoryOrderRepository) Get(ctx context.Context, id, customerID string) 
 	return nil, domain.NotFoundError{OrderID: id}
 }
 
+func (m *MemoryOrderRepository) AttachPaymentSession(
+	_ context.Context,
+	orderID, customerID, paymentLink string,
+) (bool, error) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	for _, current := range m.store {
+		if current.ID != orderID || current.CustomerID != customerID {
+			continue
+		}
+		if current.Status == domain.StatusWaitingForPayment && current.PaymentLink == paymentLink {
+			return false, nil
+		}
+		if current.Status != domain.StatusPending {
+			return false, domain.InvalidStatusTransitionError{
+				OrderID:       orderID,
+				CurrentStatus: current.Status,
+				TargetStatus:  domain.StatusWaitingForPayment,
+			}
+		}
+		current.Status = domain.StatusWaitingForPayment
+		current.PaymentLink = paymentLink
+		return true, nil
+	}
+
+	return false, domain.NotFoundError{OrderID: orderID}
+}
+
 func (m *MemoryOrderRepository) MarkPaid(
 	_ context.Context,
 	orderID, customerID, paymentLink string,
@@ -94,23 +123,30 @@ func (m *MemoryOrderRepository) MarkPaid(
 	return false, domain.NotFoundError{OrderID: orderID}
 }
 
-func (m *MemoryOrderRepository) Update(ctx context.Context, o *domain.Order, updateFn func(context.Context, *domain.Order) (*domain.Order, error)) error {
+func (m *MemoryOrderRepository) MarkReady(
+	_ context.Context,
+	orderID, customerID string,
+) (bool, error) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
-	found := false
-	for i, order := range m.store {
-		if order.ID == o.ID && order.CustomerID == o.CustomerID {
-			found = true
-			updateOrder, err := updateFn(ctx, o)
-			if err != nil {
-				return err
-			}
-			m.store[i] = updateOrder
+	for _, current := range m.store {
+		if current.ID != orderID || current.CustomerID != customerID {
+			continue
 		}
+		if current.Status == domain.StatusReady {
+			return false, nil
+		}
+		if current.Status != domain.StatusPaid {
+			return false, domain.InvalidStatusTransitionError{
+				OrderID:       orderID,
+				CurrentStatus: current.Status,
+				TargetStatus:  domain.StatusReady,
+			}
+		}
+		current.Status = domain.StatusReady
+		return true, nil
 	}
-	if !found {
-		return domain.NotFoundError{OrderID: o.ID}
-	}
-	return nil
+
+	return false, domain.NotFoundError{OrderID: orderID}
 }

@@ -10,6 +10,115 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMemoryOrderRepositoryAttachPaymentSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := NewMemoryOrderRepository()
+	created, err := repo.Create(ctx, &domain.Order{
+		CustomerID: "customer-1",
+		Status:     domain.StatusPending,
+	})
+	require.NoError(t, err)
+
+	changed, err := repo.AttachPaymentSession(
+		ctx,
+		created.ID,
+		created.CustomerID,
+		"checkout-link-1",
+	)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	changed, err = repo.AttachPaymentSession(
+		ctx,
+		created.ID,
+		created.CustomerID,
+		"checkout-link-1",
+	)
+	require.NoError(t, err)
+	require.False(t, changed)
+
+	got, err := repo.Get(ctx, created.ID, created.CustomerID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusWaitingForPayment, got.Status)
+	require.Equal(t, "checkout-link-1", got.PaymentLink)
+}
+
+func TestMemoryOrderRepositoryAttachPaymentSessionRejectsConflictingLink(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := NewMemoryOrderRepository()
+	created, err := repo.Create(ctx, &domain.Order{
+		CustomerID:  "customer-1",
+		Status:      domain.StatusWaitingForPayment,
+		PaymentLink: "checkout-link-1",
+	})
+	require.NoError(t, err)
+
+	changed, err := repo.AttachPaymentSession(
+		ctx,
+		created.ID,
+		created.CustomerID,
+		"checkout-link-2",
+	)
+	require.False(t, changed)
+	var target domain.InvalidStatusTransitionError
+	require.ErrorAs(t, err, &target)
+
+	got, err := repo.Get(ctx, created.ID, created.CustomerID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusWaitingForPayment, got.Status)
+	require.Equal(t, "checkout-link-1", got.PaymentLink)
+}
+
+func TestMemoryOrderRepositoryMarkReady(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := NewMemoryOrderRepository()
+	created, err := repo.Create(ctx, &domain.Order{
+		CustomerID: "customer-1",
+		Status:     domain.StatusPaid,
+	})
+	require.NoError(t, err)
+
+	changed, err := repo.MarkReady(ctx, created.ID, created.CustomerID)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	changed, err = repo.MarkReady(ctx, created.ID, created.CustomerID)
+	require.NoError(t, err)
+	require.False(t, changed)
+
+	got, err := repo.Get(ctx, created.ID, created.CustomerID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusReady, got.Status)
+}
+
+func TestMemoryOrderRepositoryExplicitTransitionsRejectInvalidTargets(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := NewMemoryOrderRepository()
+	created, err := repo.Create(ctx, &domain.Order{
+		CustomerID: "customer-1",
+		Status:     domain.StatusPending,
+	})
+	require.NoError(t, err)
+
+	changed, err := repo.MarkReady(ctx, created.ID, created.CustomerID)
+	require.False(t, changed)
+	var invalid domain.InvalidStatusTransitionError
+	require.ErrorAs(t, err, &invalid)
+
+	changed, err = repo.AttachPaymentSession(ctx, created.ID, "customer-2", "checkout-link-1")
+	require.False(t, changed)
+	var notFound domain.NotFoundError
+	require.ErrorAs(t, err, &notFound)
+}
+
 func TestMemoryOrderRepositoryMarkPaidTransitionsWaitingOrder(t *testing.T) {
 	t.Parallel()
 

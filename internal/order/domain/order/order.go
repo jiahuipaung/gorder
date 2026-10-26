@@ -7,8 +7,10 @@ import (
 )
 
 const (
+	StatusPending           = "pending"
 	StatusWaitingForPayment = "waiting_for_payment"
 	StatusPaid              = "paid"
+	StatusReady             = "ready"
 )
 
 // Aggregate聚合
