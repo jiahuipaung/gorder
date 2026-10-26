@@ -57,7 +57,7 @@ status = waiting_for_payment
 
 - event 没有 Provider event ID，无法区分“同一 webhook 重投”和“不同支付事件”；
 - 只保护 Order 状态与支付链接字段，不保护未来新增的积分、通知、账务等副作用；
-- webhook 当前可能携带空支付链接，首次 `MarkPaid` 会把已有链接覆盖为空；
+- webhook 常携带空支付链接；`MarkPaid` 已在空值时保留本地链接，但非空旧快照仍可能覆盖；
 - 通用 `UpdateOrder` 不受这条状态迁移规则保护。
 
 ### 2.2 客户与订单共同限制更新目标
@@ -79,7 +79,9 @@ status = waiting_for_payment
 flowchart TD
     D[收到 order.paid] --> J{JSON 合法?}
     J -- 否 --> N1[Nack requeue=false] --> R1[return]
-    J -- 是 --> M[MarkOrderPaid]
+    J -- 是 --> S{event.status == paid?}
+    S -- 否 --> N3[Nack requeue=false] --> R5[return]
+    S -- 是 --> M[MarkOrderPaid]
     M --> O{成功或重复 no-op?}
     O -- 是 --> A[Ack] --> R2[return]
     O -- 否 --> H[HandleRetry]
@@ -89,8 +91,8 @@ flowchart TD
 ```
 
 **证据**：三个 consumer 的 tests 分别断言成功、畸形消息、handler/downstream 错误、retry
-publish 成功与失败；所有覆盖路径的 ACK/NACK 调用总数都为 1。Kitchen 还验证非 `paid`
-消息不会触发 cook、gRPC 或 retry。
+publish 成功与失败；所有覆盖路径的 ACK/NACK 调用总数都为 1。Order 验证非 `paid` 消息
+不会调用 handler/retry；Kitchen 还验证该消息不会触发 cook、gRPC 或 retry。
 
 **剩余风险**：
 
@@ -166,7 +168,7 @@ flowchart LR
 | R3 | retry publish 返回 nil，但 Broker 未实际持久化/路由 | consumer ACK 原 delivery | 替代消息和原消息都不可恢复 | 无 publisher confirms，`mandatory=false` | 高 |
 | R4 | Stripe webhook 收到已支付结果，RabbitMQ publish 返回 error | webhook 返回 HTTP 503，等待 Provider 重试 | 恢复依赖 Stripe 重试策略；没有本地 ledger/Outbox | webhook 单元测试；无 Provider 对账 | 高 |
 | R5 | `order.paid` 没有 Provider event ID/Inbox | 不能持久化识别同一 Provider 事件 | 新增副作用后可能重复执行 | 订单终态只能保护一个状态字段集合 | 高 |
-| R6 | webhook metadata 中 payment link 使用旧订单快照 | paid event 可能携带空链接 | `MarkPaid` 首次迁移覆盖已保存链接 | 查询订单可观察；无修复 | 中 |
+| R6 | webhook metadata 中 payment link 使用旧订单快照 | 空链接已被忽略；非空旧链接仍可能覆盖更新值 | 支付链接回退到较旧 session | repository 测试覆盖空值保留；事件模型仍待重构 | 中 |
 | R7 | Payment/Kitchen 使用通用 `UpdateOrder` | filter 无旧状态/版本 | 并发写可能覆盖新状态或链接 | 无冲突指标或测试 | 高 |
 | R8 | Stock 只检查、不预占 | 检查后数量仍可被其他订单使用 | 无法建立“不超卖”不变量 | 无 reservation 数据 | 最高（若目标是真实交易） |
 | R9 | Kitchen 在 ACK 前执行 `cook` | 重投会再次执行副作用 | 重复履约 | 无 Inbox/履约记录 | 高 |

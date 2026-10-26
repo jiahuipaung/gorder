@@ -78,6 +78,10 @@ func (r *OrderRepositoryMongo) MarkPaid(
 	if err != nil {
 		return false, err
 	}
+	updates := bson.M{"status": domain.StatusPaid}
+	if paymentLink != "" {
+		updates["payment_link"] = paymentLink
+	}
 	result, err := r.collection().UpdateOne(
 		ctx,
 		bson.M{
@@ -85,10 +89,7 @@ func (r *OrderRepositoryMongo) MarkPaid(
 			"customer_id": customerID,
 			"status":      domain.StatusWaitingForPayment,
 		},
-		bson.M{"$set": bson.M{
-			"status":       domain.StatusPaid,
-			"payment_link": paymentLink,
-		}},
+		bson.M{"$set": updates},
 	)
 	if err != nil {
 		return false, err

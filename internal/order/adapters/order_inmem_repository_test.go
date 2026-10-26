@@ -168,3 +168,25 @@ func TestMemoryOrderRepositoryMarkPaidTreatsPaidOrderAsNoOp(t *testing.T) {
 	require.Equal(t, domain.StatusPaid, got.Status)
 	require.Equal(t, "first-link", got.PaymentLink)
 }
+
+func TestMemoryOrderRepositoryMarkPaidPreservesStoredLinkWhenEventLinkIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	repo := NewMemoryOrderRepository()
+	created, err := repo.Create(ctx, &domain.Order{
+		CustomerID:  "customer-1",
+		Status:      domain.StatusWaitingForPayment,
+		PaymentLink: "stored-checkout-link",
+	})
+	require.NoError(t, err)
+
+	changed, err := repo.MarkPaid(ctx, created.ID, created.CustomerID, "")
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	got, err := repo.Get(ctx, created.ID, created.CustomerID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusPaid, got.Status)
+	require.Equal(t, "stored-checkout-link", got.PaymentLink)
+}

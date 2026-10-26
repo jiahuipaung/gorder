@@ -27,6 +27,7 @@ MongoDB 以单文档条件更新作为原子边界：过滤条件同时包含订
 
 ```text
 JSON 不合法   -> Nack(requeue=false) -> return
+event 非 paid  -> Nack(requeue=false) -> return
 命令成功      -> Ack                 -> return
 命令失败      -> retry publish 成功 -> Ack original -> return
 命令失败      -> retry publish 失败 -> Nack(requeue=true) -> return
@@ -56,6 +57,7 @@ ok   order/infrastructure/consumer
 
 - 首次支付将订单从 `waiting_for_payment` 原子迁移到 `paid`；
 - 并发或顺序重复投递只有一次返回 `changed=true`，且保留第一次支付链接；
+- paid event 的支付链接为空时保留 Order 已存储的链接；
 - Mongo 更新过滤器包含订单、客户和原状态三个条件；
 - 非 `paid` 事件不会修改订单；
 - 成功、畸形消息、处理错误分别只触发预期的 ACK/NACK 路径；

@@ -207,8 +207,9 @@ customer_id = event.customer_id
 status = waiting_for_payment
 ```
 
-只在条件命中时设置 `status=paid` 和 event 携带的 `payment_link`。若没有修改，repository
-重新读取订单：当前已经是 `paid` 时返回成功 no-op，其他状态返回非法迁移错误。
+只在条件命中时设置 `status=paid`；event 携带的 `payment_link` 非空时才更新该字段，空值
+会保留 Order 已保存的链接。若没有修改，repository 重新读取订单：当前已经是 `paid` 时返回
+成功 no-op，其他状态返回非法迁移错误。
 
 ### 4.2 已验证的范围
 
@@ -216,8 +217,8 @@ status = waiting_for_payment
 - 顺序重复投递返回成功 no-op；
 - 并发重放只有一个调用观察到真实变化，并在 race detector 下运行；
 - `order_id + customer_id` 一起限制更新目标；
-- Order consumer 成功只 ACK，解析失败只 NACK；handler 失败后根据 retry 交接结果 ACK 或
-  requeue NACK，且每条路径只有一个确认调用。
+- Order consumer 成功只 ACK，解析失败或 event status 非 `paid` 时只 NACK；handler 失败后
+  根据 retry 交接结果 ACK 或 requeue NACK，且每条路径只有一个确认调用。
 
 可复现命令和测试范围见[支付消息重复投递实验](../experiments/payment-redelivery.md)。
 
@@ -228,7 +229,7 @@ status = waiting_for_payment
 | Stripe event ID | 未写入 `order.paid` 消息，也没有持久化 Inbox | 只能依赖状态迁移吸收这一种重复副作用，不能审计每个 Provider event |
 | RabbitMQ publish 返回错误 | webhook 返回 HTTP 503 | 允许 Stripe 按 Provider 策略重试；但没有本地 event ledger/Outbox，恢复仍依赖外部重试 |
 | RabbitMQ publish 返回 nil 但消息未被 Broker 持久化 | 当前没有 publisher confirms | webhook 返回 HTTP 200 后仍存在不可证明的丢失窗口 |
-| metadata `paymentLink` | 来自创建会话前的订单快照 | paid event 通常携带空链接，`MarkPaid` 可能覆盖已经保存的支付链接 |
+| metadata `paymentLink` | 来自创建会话前的订单快照 | 空值不会再覆盖本地链接；非空旧快照仍可能回退较新的链接，P1 应从事件契约移除该权威 |
 | metadata 商品 JSON | 序列化的是 Stripe line item params，再反序列化为 order protobuf item | 字段模型不完全对应，履约消息中的商品信息可能不完整 |
 | 其他 Stripe event type / 未 paid session | 返回 HTTP 200，不发布业务事件 | 这是当前筛选策略，不是完整支付状态机 |
 

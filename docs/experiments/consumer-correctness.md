@@ -29,7 +29,7 @@ Inbox/Outbox 提供清晰输入。
 | 输入或处理结果 | retry/DLQ 行为 | 原 delivery 终态 | 自动化证据 |
 |---|---|---|---|
 | JSON 无法解析 | 不调用 | `Nack(requeue=false)` | Payment、Order、Kitchen consumer tests |
-| Kitchen 状态不是 `paid` | 不调用，也不 cook/gRPC | `Nack(requeue=false)` | Kitchen consumer test |
+| Order/Kitchen 状态不是 `paid` | 不调用 handler/retry；Kitchen 也不 cook/gRPC | `Nack(requeue=false)` | Order、Kitchen consumer tests |
 | handler/downstream 成功 | 不调用 | `Ack` | 三个 consumer tests |
 | handler/downstream 失败，retry publish 成功 | 调用一次 | `Ack` | 三个 consumer tests |
 | handler/downstream 失败，retry publish 失败 | 调用一次 | `Nack(requeue=true)` | 三个 consumer tests |
@@ -62,8 +62,8 @@ cd internal/order
 go test -race -count=1 ./infrastructure/consumer
 ```
 
-预期观察：成功与 retry 交接成功 ACK 原消息；畸形消息 NACK 且不 requeue；retry 交接失败
-NACK 并 requeue。所有路径的 ACK/NACK 调用总数均为 1，race detector 无报告。
+预期观察：成功与 retry 交接成功 ACK 原消息；畸形或非 `paid` 消息 NACK 且不 requeue；retry
+交接失败 NACK 并 requeue。所有路径的 ACK/NACK 调用总数均为 1，race detector 无报告。
 
 ### 4.3 Kitchen consumer
 

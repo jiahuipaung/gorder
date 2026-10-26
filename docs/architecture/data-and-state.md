@@ -51,7 +51,7 @@ MongoDB model 当前保存：
 | `id` | model 中存在，但创建时没有单独赋值 | 当前读取逻辑使用 `_id`，不依赖该字段 |
 | `customer_id` | 创建订单请求 | 与 `_id` 一起隔离客户订单 |
 | `status` | 创建时为空；后续 Payment/Order/Kitchen 更新 | 只有 `MarkPaid` 对旧状态做条件限制 |
-| `payment_link` | Payment 创建 Stripe URL 后写入 | webhook event 可能再次以空值覆盖 |
+| `payment_link` | Payment 创建 Stripe URL 后写入 | paid event 链接为空时保留本地值；非空旧快照仍可能覆盖 |
 | `items` | Stock 校验后返回的订单商品快照 | 不是实时库存，也不代表已预占 |
 
 Order repository 暴露四类操作：

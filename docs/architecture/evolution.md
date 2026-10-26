@@ -44,7 +44,7 @@ flowchart LR
 ### 已实现方案
 
 - 每个 consumer 通过显式分支选择一个 terminal outcome：成功处理或 retry/DLQ 交接成功时
-  ACK；畸形消息和明确判定的 Kitchen 非 `paid` 消息 `Nack(requeue=false)`；retry 交接失败时
+  ACK；畸形消息和明确判定的 Order/Kitchen 非 `paid` 消息 `Nack(requeue=false)`；retry 交接失败时
   `Nack(requeue=true)`；
 - 错误路径立即 return，同一 delivery 不会先 NACK 再 ACK；
 - `CreatePayment` 对 nil order 返回 error，并原样返回 Stripe 与 Order gRPC error；
@@ -53,8 +53,8 @@ flowchart LR
 - 通过窄 `RetryHandler`、`Publisher`、`CookHandler` seam 在无 live Broker/Stripe 的测试中
   覆盖错误路径。
 
-错误分类仍不完整：除畸形 JSON 和 Kitchen 非 `paid` 消息外，当前业务/基础设施错误仍主要
-共用 retry 策略。该限制留在后续事件契约和重试策略演进中。
+错误分类仍不完整：除畸形 JSON 和 Order/Kitchen 非 `paid` 消息外，当前业务/基础设施错误
+仍主要共用 retry 策略。该限制留在后续事件契约和重试策略演进中。
 
 ### 不解决什么
 

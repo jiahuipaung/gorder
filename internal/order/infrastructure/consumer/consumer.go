@@ -57,6 +57,11 @@ func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Chann
 		_ = msg.Nack(false, false)
 		return
 	}
+	if o.Status != domain.StatusPaid {
+		logrus.Infof("reject non-paid order event: order=%s status=%s", o.ID, o.Status)
+		_ = msg.Nack(false, false)
+		return
+	}
 	if _, err := c.app.Commands.MarkOrderPaid.Handler(ctx, command.MarkOrderPaid{
 		Order: o,
 	}); err != nil {

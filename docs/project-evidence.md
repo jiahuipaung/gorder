@@ -37,7 +37,8 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 | 重复支付消息成为成功 no-op | 已验证行为 | [应用命令测试](../internal/order/app/command/mark_order_paid_test.go)和 repository 测试覆盖顺序重放 |
 | 并发支付重放只发生一次状态变化 | 已验证行为 | [内存 repository 并发测试](../internal/order/adapters/order_inmem_repository_test.go)在 race detector 下运行 |
 | 支付事件的客户/订单隔离 | 已验证行为 | repository 测试覆盖 `order_id` 与 `customer_id` 共同约束 |
-| Payment、Order、Kitchen consumer 的 ACK/NACK 互斥 | 已验证行为 | 三个 consumer 测试覆盖成功、畸形消息、retry 成功与失败；Kitchen 另覆盖非 `paid` 消息 |
+| paid event 空链接不覆盖本地支付链接 | 已验证行为 | 内存与 Mongo repository 测试覆盖空 `payment_link` 的条件更新 |
+| Payment、Order、Kitchen consumer 的 ACK/NACK 互斥 | 已验证行为 | 三个 consumer 测试覆盖成功、畸形消息、retry 成功与失败；Order/Kitchen 另覆盖非 `paid` 消息 |
 | retry 交接失败保留原 delivery | 已验证行为 | [Payment](../internal/payment/infrastructure/consumer/consumer_test.go)、[Order](../internal/order/infrastructure/consumer/consumer_test.go)和 [Kitchen](../internal/kitchen/infrastructure/consumer/consumer_test.go)测试断言 `Nack(requeue=true)` |
 | Payment command 错误传播 | 已验证行为 | [command 测试](../internal/payment/app/command/create_payment_test.go)覆盖 nil order、Stripe error、Order gRPC error 和成功更新 |
 | webhook publish 失败返回 HTTP 503 | 已验证行为 | [webhook 测试](../internal/payment/http_test.go)覆盖合法 signed paid event、publish error 和 invalid signature |

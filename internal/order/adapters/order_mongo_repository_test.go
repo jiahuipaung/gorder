@@ -50,6 +50,41 @@ func TestOrderRepositoryMongoMarkPaidUsesConditionalUpdate(t *testing.T) {
 	})
 }
 
+func TestOrderRepositoryMongoMarkPaidDoesNotOverwriteLinkWithEmptyValue(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	mt.Run("empty event link is omitted from update", func(mt *mtest.T) {
+		previousDBName, previousCollName := dbName, collName
+		dbName, collName = mt.DB.Name(), mt.Coll.Name()
+		defer func() {
+			dbName, collName = previousDBName, previousCollName
+		}()
+
+		mt.AddMockResponses(mtest.CreateSuccessResponse(
+			bson.E{Key: "n", Value: int32(1)},
+			bson.E{Key: "nModified", Value: int32(1)},
+		))
+
+		repo := NewOrderRepositoryMongo(mt.Client)
+		changed, err := repo.MarkPaid(
+			context.Background(),
+			primitive.NewObjectID().Hex(),
+			"customer-1",
+			"",
+		)
+		require.NoError(t, err)
+		require.True(t, changed)
+
+		started := mt.GetStartedEvent()
+		require.NotNil(t, started)
+		updates, err := started.Command.Lookup("updates").Array().Values()
+		require.NoError(t, err)
+		set := updates[0].Document().Lookup("u").Document().Lookup("$set").Document()
+		require.Equal(t, domain.StatusPaid, set.Lookup("status").StringValue())
+		_, err = set.LookupErr("payment_link")
+		require.Error(t, err)
+	})
+}
+
 func TestOrderRepositoryMongoMarkPaidClassifiesNoMatch(t *testing.T) {
 	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
 	orderID := primitive.NewObjectID()

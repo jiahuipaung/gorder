@@ -85,7 +85,9 @@ func (m *MemoryOrderRepository) MarkPaid(
 			}
 		}
 		current.Status = domain.StatusPaid
-		current.PaymentLink = paymentLink
+		if paymentLink != "" {
+			current.PaymentLink = paymentLink
+		}
 		return true, nil
 	}
 
