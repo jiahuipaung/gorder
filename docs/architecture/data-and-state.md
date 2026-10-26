@@ -118,9 +118,10 @@ stateDiagram-v2
 | 非法状态 | 返回 `InvalidStatusTransitionError` | 没有统一迁移验证 |
 | 自动化证据 | repository、command、consumer 测试 | 默认验证只确认编译，无并发语义测试 |
 
-Mongo `Update` 启动 session transaction，先读取旧订单，再执行调用者函数，最后按 ID 和客户
-ID 更新。但是最终 `UpdateOne` 没有把旧状态、版本或更新时间放进 filter，所以该 transaction
-本身不能防止另一个并发调用在其间修改同一订单后发生覆盖。
+Mongo `Update` 调用了 `StartSession` 和 `StartTransaction`，但后续 `Get` 与 `UpdateOne` 继续
+使用原始 `context.Context`，没有使用 `mongo.SessionContext` 执行操作。因此当前代码不能证明
+这两个操作实际处在所启动的 transaction 内。即使补齐 session context，最终 `UpdateOne`
+也没有把旧状态、版本或更新时间放进 filter，仍不能仅靠“先读后写”防止并发覆盖。
 
 ## 5. 库存数据模型
 

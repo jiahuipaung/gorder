@@ -235,7 +235,11 @@ sequenceDiagram
         Kitchen->>MQ: ACK
     else update fails
         Kitchen->>MQ: retry publish or DLQ
-        Kitchen->>MQ: NACK original
+        alt retry publish succeeds
+            Kitchen->>MQ: defer ACK original
+        else retry publish fails
+            Kitchen->>MQ: defer NACK original
+        end
     end
 ```
 
@@ -248,6 +252,8 @@ Kitchen 是演示性的履约 worker，不代表真实仓储、发货或制作�
 - 通用 `UpdateOrder` 没有要求旧状态必须为 `paid`，也没有版本条件；
 - `ready` 在 Kitchen 中以字符串写入，但 Order domain 没有对应常量或正式迁移方法；
 - JSON 解析失败时函数会先显式 NACK，defer 中又依据错误再次 NACK，存在重复确认调用；
+- Order gRPC 失败后，defer 最终 ACK 还是 NACK 取决于 `HandleRetry` 是否成功，因为重试结果
+  覆盖了原始业务错误；
 - Kitchen 使用 server-named fanout queue，运行期行为依赖 RabbitMQ 声明与绑定成功。
 
 ## 6. 跨流程不变量
