@@ -2,6 +2,8 @@ package command
 
 import (
 	"context"
+	"errors"
+
 	"github.com/jiahuipaung/gorder/common/decorator"
 	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
 	"github.com/jiahuipaung/gorder/common/tracing"
@@ -24,7 +26,7 @@ func (c createPaymentHandler) Handler(ctx context.Context, cmd CreatePayment) (s
 	ctx, span := tracing.Start(ctx, "create_payment")
 	defer span.End()
 	if cmd.Order == nil {
-		logrus.Errorf("Order field is nil")
+		return "", errors.New("order field is nil")
 	}
 	link, err := c.processor.CreatePaymentLink(ctx, cmd.Order)
 	if err != nil {
@@ -38,7 +40,9 @@ func (c createPaymentHandler) Handler(ctx context.Context, cmd CreatePayment) (s
 		PaymentLink: link,
 		Items:       cmd.Order.Items,
 	}
-	err = c.orderGrpc.UpdateOrder(ctx, newOrder)
+	if err = c.orderGrpc.UpdateOrder(ctx, newOrder); err != nil {
+		return "", err
+	}
 	return link, nil
 }
 
