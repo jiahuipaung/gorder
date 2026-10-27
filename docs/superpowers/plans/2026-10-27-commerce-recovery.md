@@ -23,7 +23,7 @@
 - [x] 3. Add durable MySQL Reserve/Confirm/Release and contention tests. Persist stable identity, conflict detection, terminal transitions and expiry/recovery queries.
 - [x] 4. Wire reservation into order/payment state and pending-intent recovery; gate paid/fulfilment on confirmed stock. Expiry release is intentionally disabled until Provider resolution exists; late payment after release remains a future exception path.
 - [x] 5. Add isolated credential-free application-flow and fault scenarios, plus real MySQL/RabbitMQ integration suites. Update architecture, operational instructions and limitations. Live Stripe/Mongo end-to-end failure injection remains outside this slice.
-- [ ] 6. Review final diff, run full verification, create PR with exact implementation scope and evidence. Do not merge without user authorization for this code change.
+- [x] 6. Review final diff, run full verification, create PR with exact implementation scope and evidence. Do not merge without user authorization for this code change.
 
 ## Verification gates
 
@@ -39,3 +39,4 @@ Tasks 2–5: reconnect/offline queues; a failing consumer cannot rebroadcast to 
 - Isolated MySQL suite passed for atomic reservation, last-unit contention, idempotent replay, conflict, terminal-state race, and read-only expiry scan. Stock RPCs and Order checkout Reserve are wired.
 - Order persists pending intent and retries unconfirmed creation events before expiry. Signed paid webhook confirms stock; Order verifies confirmed stock before paid; Kitchen verifies persisted paid before simulated work.
 - Offline application flow and real isolated MySQL/RabbitMQ suites passed on 2026-10-27. Live Stripe, full Mongo crash-point and Provider-reconciliation tests have not been run.
+- Independent review found an uncertain publisher-confirmation reuse bug and finite Kitchen retry that could strand a valid paid event. Both were fixed and retested. PR: https://github.com/jiahuipaung/gorder/pull/2; push and PR test/integration jobs passed. No merge performed.
