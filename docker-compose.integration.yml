@@ -20,7 +20,9 @@ services:
     ports:
       - "127.0.0.1:53308:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-plocal_test_only"]
+      # MySQL's init-only socket server can answer localhost before TCP and
+      # the test database are ready. Probe the same TCP/auth/DB path as Go.
+      test: ["CMD-SHELL", "mysql --protocol=tcp -h 127.0.0.1 -u root -plocal_test_only gorder_test -e 'SELECT 1' >/dev/null 2>&1"]
       interval: 3s
       timeout: 5s
       retries: 30
