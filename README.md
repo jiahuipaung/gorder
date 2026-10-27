@@ -4,7 +4,7 @@
 
 > Reliable order workflow in Go — explicit state transitions, idempotent payment handling, and testable failure semantics.
 
-面向交易一致性问题的 Go 微服务项目，覆盖订单创建、库存校验、支付会话、支付回调与履约推进。
+面向交易一致性问题的 Go 微服务项目，覆盖订单创建、库存预占、支付会话、支付回调与模拟履约。
 
 GOrder 关注的不是商城功能堆叠，而是一个更具体的工程问题：当 MongoDB、MySQL、RabbitMQ
 和外部支付平台无法共享事务时，如何让订单状态在重复消息、并发更新和局部失败下仍然保持
@@ -18,6 +18,10 @@ GOrder 关注的不是商城功能堆叠，而是一个更具体的工程问题�
   精确重放返回成功 no-op，冲突或乱序更新被拒绝。
 - **支付请求幂等**：Stripe Checkout 使用订单 ID 作为幂等键，降低 Payment 消息重投时
   重复创建支付会话的风险。
+- **库存预占**：Stock 在 MySQL 事务中按订单 ID 原子预占多 SKU；同一请求重放不重复扣减，
+  确认与释放互斥。Order 持久化待处理意图并重试预占与创建事件发布。
+- **可验证的支付推进**：签名通过的已支付 webhook 先确认预占，再发布持久化 `order.paid`；
+  Order 核验确认状态后推进 `paid`，Kitchen 核验已落库的支付状态后模拟履约。
 - **明确的消息确认语义**：Payment、Order、Kitchen consumer 的每条处理路径只选择一个
   ACK/NACK 终态；替代消息发布失败时保留原 delivery。
 - **可复现的可靠性证据**：仓库包含并发重放、状态冲突、gRPC 错误分类、webhook 签名与
@@ -28,7 +32,7 @@ GOrder 关注的不是商城功能堆叠，而是一个更具体的工程问题�
 ```mermaid
 flowchart LR
     Client[Client] -->|REST| Order[Order Service]
-    Order -->|gRPC| Stock[Stock Service]
+    Order -->|gRPC check / reserve| Stock[Stock Service]
     Stock --> MySQL[(MySQL)]
     Order --> Mongo[(MongoDB)]
 
@@ -37,7 +41,8 @@ flowchart LR
     Payment -->|Checkout API| Stripe[Stripe]
     Payment -->|AttachPaymentSession| Order
 
-    Stripe -->|webhook| Payment
+    Stripe -->|signed webhook| Payment
+    Payment -->|gRPC confirm| Stock
     Payment -->|order.paid| MQ
     MQ --> Order
     MQ --> Kitchen[Kitchen Worker]
@@ -50,7 +55,7 @@ flowchart LR
 | 服务 | 核心职责 | 技术边界 |
 |---|---|---|
 | Order | 创建、查询订单并维护状态机 | REST、gRPC、MongoDB、RabbitMQ |
-| Stock | 校验商品与当前库存 | gRPC、MySQL、Stripe Product API |
+| Stock | 校验商品、预占/确认/释放库存 | gRPC、MySQL、Stripe Product API |
 | Payment | 创建 Checkout Session、接收并验证 webhook | Stripe、RabbitMQ、Order gRPC |
 | Kitchen | 消费支付成功事件并模拟履约 | RabbitMQ、Order gRPC |
 
@@ -62,6 +67,7 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> pending: CreateOrder
+    pending --> stock_rejected: definite shortage
     pending --> waiting_for_payment: AttachPaymentSession
     waiting_for_payment --> paid: MarkPaid
     paid --> ready: MarkOrderReady
@@ -78,6 +84,9 @@ stateDiagram-v2
 | 乱序或冲突状态写入 | 返回非法迁移，不覆盖当前状态或已有支付链接 |
 | handler/downstream 失败 | retry/DLQ 交接成功后 ACK 原消息；交接失败则 NACK 并 requeue |
 | webhook 发布 RabbitMQ 失败 | 返回 HTTP 503，让支付平台保留重试机会 |
+| 下单后 Stock/RabbitMQ 暂不可用 | 保留 MongoDB 待处理意图；后台以原订单 ID 重试预占与创建事件发布 |
+| 库存不足 | 标记 `stock_rejected`，不发布创建支付事件 |
+| Broker 无法确认消息 | 不当作已投递；保留原消息或等待持久化意图重试 |
 | 格式错误或明确不可处理的消息 | NACK 且不 requeue，避免无意义热循环 |
 
 这里追求的是“至少一次投递下，已建模的业务效果可重入”，而不是用 exactly-once 掩盖跨系统
@@ -100,6 +109,10 @@ make verify
 - 验证状态首次迁移、精确重放、并发支付事件、客户隔离和错误分类；
 - 验证三个 consumer 的 ACK/NACK 互斥及 retry 交接失败路径；
 - 验证 Stripe 幂等参数、webhook 测试签名和消息发布失败反馈。
+- 验证离线订单状态链、库存确认门禁与待处理意图恢复。
+
+真实 MySQL 与 RabbitMQ 的隔离集成测试使用 [专用 Compose 文件和命令](docs/architecture/inventory-reservation.md#verification)；
+不需要 Stripe 凭证。它们不等于生产环境的端到端支付验证。
 
 GitHub Actions 对每次 push 和 pull request 执行相同验证。
 
@@ -114,6 +127,9 @@ GitHub Actions 对每次 push 和 pull request 执行相同验证。
 | Consumer 单一 ACK/NACK 终态 | [Payment](internal/payment/infrastructure/consumer/consumer_test.go) · [Order](internal/order/infrastructure/consumer/consumer_test.go) · [Kitchen](internal/kitchen/infrastructure/consumer/consumer_test.go) |
 | Stripe webhook 与发布失败 | [Payment HTTP tests](internal/payment/http_test.go) |
 | Checkout Session 稳定幂等键 | [Stripe processor tests](internal/payment/infrastructure/processor/stripe_test.go) |
+| 库存并发与终态互斥 | [MySQL integration tests](internal/stock/reservation/store_integration_test.go) |
+| 持久队列与发布确认 | [RabbitMQ integration tests](internal/common/broker/rabbitmq_integration_test.go) |
+| 无凭证状态链与恢复 | [Order flow](internal/order/app/command/commerce_flow_test.go) · [recovery](internal/order/service/recovery_test.go) |
 
 ## 本地运行
 
@@ -139,7 +155,7 @@ export ENDPOINT_STRIPE_SECRET=replace-with-a-test-webhook-secret
 api/                 OpenAPI 与 protobuf 契约
 internal/common/     消息、服务发现、日志、指标与 tracing
 internal/order/      订单领域、应用命令、MongoDB adapter 与 consumer
-internal/stock/      库存查询、MySQL adapter 与 gRPC server
+internal/stock/      库存查询、预占状态机、MySQL adapter 与 gRPC server
 internal/payment/    支付应用、Stripe adapter、webhook 与 consumer
 internal/kitchen/    履约 consumer 与 Order gRPC adapter
 docs/                架构、可靠性、演进设计与复现实验
@@ -151,7 +167,8 @@ docs/                架构、可靠性、演进设计与复现实验
 - [核心业务流程](docs/architecture/business-flow.md)：从创建订单到支付、履约的完整时序；
 - [数据所有权与状态模型](docs/architecture/data-and-state.md)：状态权威与迁移约束；
 - [可靠性模型](docs/architecture/reliability.md)：消息语义、失败窗口和当前保证；
-- [架构演进路线](docs/architecture/evolution.md)：Inbox、Outbox、库存预占与对账设计；
+- [库存预占边界](docs/architecture/inventory-reservation.md)：当前保证、验证方式和剩余故障窗口；
+- [架构演进路线](docs/architecture/evolution.md)：Inbox、Outbox 与对账设计；
 - [可复现实验](docs/README.md#本地验证与继续开发)：支付重放、consumer correctness 和显式迁移；
 - [证据与公开边界](docs/project-evidence.md)：源码事实、验证结果与演进设计的区分。
 
@@ -159,7 +176,7 @@ docs/                架构、可靠性、演进设计与复现实验
 
 - 为支付事件引入稳定 event envelope、Provider event ledger 与 consumer Inbox；
 - 使用 Transactional Outbox 和 publisher confirms 关闭数据库提交与消息发布之间的窗口；
-- 将库存检查演进为可重入的预占、确认、释放状态机；
+- 对到期预占增加先查支付状态、再决定释放的对账流程；
 - 为履约副作用增加持久化执行记录，并补充跨服务对账与故障注入实验。
 
 ## 项目来源

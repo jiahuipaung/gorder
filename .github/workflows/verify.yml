@@ -18,3 +18,28 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: internal/*/go.sum
       - run: make verify
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: internal/*/go.sum
+      - name: Start isolated MySQL and RabbitMQ
+        run: docker compose -p gorder-review-integration -f docker-compose.integration.yml up -d --wait
+      - name: Test MySQL reservation invariants
+        working-directory: internal/stock
+        env:
+          GORDER_TEST_MYSQL_DSN: root:local_test_only@tcp(127.0.0.1:53308)/gorder_test?parseTime=true&loc=UTC
+        run: go test -tags integration -count=1 ./reservation
+      - name: Test RabbitMQ delivery topology
+        working-directory: internal/common
+        env:
+          GORDER_TEST_AMQP_URL: amqp://gorder_test:local_test_only@127.0.0.1:55673/gorder_test
+        run: go test -tags integration -count=1 ./broker
+      - name: Stop isolated services
+        if: always()
+        run: docker compose -p gorder-review-integration -f docker-compose.integration.yml down

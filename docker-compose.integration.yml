@@ -1,0 +1,26 @@
+services:
+  test-rabbit:
+    image: rabbitmq:3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: gorder_test
+      RABBITMQ_DEFAULT_PASS: local_test_only
+      RABBITMQ_DEFAULT_VHOST: gorder_test
+    ports:
+      - "127.0.0.1:55673:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+  test-mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: local_test_only
+      MYSQL_DATABASE: gorder_test
+    ports:
+      - "127.0.0.1:53308:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-plocal_test_only"]
+      interval: 3s
+      timeout: 5s
+      retries: 30

@@ -5,6 +5,7 @@ import (
 	"github.com/jiahuipaung/gorder/common/tracing"
 
 	"github.com/jiahuipaung/gorder/common/broker"
+	grpc_client "github.com/jiahuipaung/gorder/common/client"
 	_ "github.com/jiahuipaung/gorder/common/config"
 	"github.com/jiahuipaung/gorder/common/logging"
 	"github.com/jiahuipaung/gorder/common/server"
@@ -48,7 +49,16 @@ func main() {
 	}()
 
 	go consumer.NewConsumer(application).Listen(ch)
-	paymentHandler := NewPaymentHandler(ch)
+	stockClient, closeStock, err := grpc_client.NewStockGrpcClient(ctx)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	defer closeStock()
+	publisher, err := broker.ConfirmedPublisherFor(ch)
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	paymentHandler := NewPaymentHandler(publisher, grpcReservationConfirmer{client: stockClient})
 
 	switch serviceType {
 	case "http":

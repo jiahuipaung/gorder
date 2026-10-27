@@ -97,8 +97,8 @@ publish 成功与失败；所有覆盖路径的 ACK/NACK 调用总数都为 1。
 **剩余风险**：
 
 - ACK/NACK 返回错误均被忽略，连接异常时最终 Broker 状态由 AMQP 连接决定；
-- retry publish 使用 `mandatory=false` 且没有 publisher confirms，helper 返回 nil 不是 Broker
-  已持久化替代消息的端到端证明；
+- retry publish 已使用 confirmed publisher 和 mandatory 路由检查；但 Broker confirm 不能证明
+  替代消息与业务库更新原子提交；
 - retry publish 失败后 requeue 原消息，能避免当前 consumer 主动丢弃唯一副本，但永久故障
   可能造成重复投递与队列压力；
 - Kitchen 的 delivery 确认互斥不等于履约副作用幂等，`cook` 后崩溃仍可能重复执行。
@@ -144,8 +144,8 @@ flowchart LR
 
 当前机制能够表达有限次数重试和终止队列，但不能推导出“消息一定不会丢”：
 
-- 没有启用 publisher confirms，函数返回成功不构成端到端持久化证明；
-- publish 使用 `mandatory=false`，无法路由的消息不一定回到应用；
+- 已启用 publisher confirms 和 mandatory 路由检查；它们只证明 Broker 接收和可路由，
+  不能证明应用数据库与消息原子提交；
 - 重发失败时会 requeue 原 delivery；这避免立即丢失，但没有 poison-message 隔离或 requeue
   次数上限；
 - sleep 阻塞当前消费循环，不是带调度时间的延迟队列；
@@ -173,14 +173,14 @@ flowchart LR
 
 | ID | 失败窗口 | 当前结果 | 影响 | 当前检测/恢复 | 建议优先级 |
 |---|---|---|---|---|---|
-| R1 | Order 写 Mongo 成功，发布 `order.create` 失败 | API 报错但订单已存在 | 支付流程未启动；客户端重试可能重复建单 | 无自动扫描或 Outbox | 高 |
+| R1 | Order 写 Mongo 成功，预占/发布暂时失败 | 返回待恢复订单 ID；后台重试未到期意图 | 响应丢失时客户重试仍可能重复建单 | 持久意图扫描；无请求级幂等键/Outbox | 高 |
 | R2 | Stripe Checkout 已创建，Order gRPC 更新失败 | error 到达 Payment consumer 并进入 retry；同订单重试复用 Stripe 幂等键 | Provider 请求重复窗口已收口；仍无本地支付记录和长期对账 | params/command/consumer 测试；依赖 Provider 幂等保留语义 | 中 |
-| R3 | retry publish 返回 nil，但 Broker 未实际持久化/路由 | consumer ACK 原 delivery | 替代消息和原消息都不可恢复 | 无 publisher confirms，`mandatory=false` | 高 |
+| R3 | retry 替代消息未被 Broker 接收或路由 | consumer 保留原 delivery | 可能持续重投/积压 | publisher confirms + mandatory return 检查 | 已缓解，需运维告警 |
 | R4 | Stripe webhook 收到已支付结果，RabbitMQ publish 返回 error | webhook 返回 HTTP 503，等待 Provider 重试 | 恢复依赖 Stripe 重试策略；没有本地 ledger/Outbox | webhook 单元测试；无 Provider 对账 | 高 |
 | R5 | `order.paid` 没有 Provider event ID/Inbox | 不能持久化识别同一 Provider 事件 | 新增副作用后可能重复执行 | 订单终态只能保护一个状态字段集合 | 高 |
 | R6 | webhook metadata 中 payment link 使用旧订单快照 | 空链接已被忽略；非空值仍可能在 paid 迁移时覆盖当前链接 | 支付链接可能来自旧事件快照 | session 挂接冲突已拒绝；paid payload 权威仍待移除 | 中 |
 | R7 | Payment/Kitchen 状态写入 | 已替换为显式 RPC 与带旧状态的条件更新 | 已建模迁移不再接受任意 snapshot 覆盖 | repository、command、gRPC 测试 | 已关闭（当前模型） |
-| R8 | Stock 只检查、不预占 | 检查后数量仍可被其他订单使用 | 无法建立“不超卖”不变量 | 无 reservation 数据 | 最高（若目标是真实交易） |
+| R8 | 预占到期但支付结果未知 | 不自动释放 | 库存可能长期被占用 | Due 只读扫描；Provider 对账未实现 | 高 |
 | R9 | Kitchen 在 ACK 前执行 `cook` | 重投会再次执行副作用 | 重复履约 | 无 Inbox/履约记录 | 高 |
 | R10 | retry/DLQ republish 持续失败 | 原消息持续 requeue | 不会由当前调用主动丢弃，但可能形成热循环和队列压力 | 日志；无熔断、调度队列或告警 | 中 |
 | R11 | Mongo 通用 `Update` 的伪事务 | 通用入口与未生效事务已删除，单文档迁移使用条件 `UpdateOne` | 当前三条迁移不再依赖 transaction；未来多文档操作仍需重新设计 | Mongo mock 验证条件 filter | 已关闭（当前模型） |
@@ -195,11 +195,12 @@ flowchart LR
 | 同订单重复创建 Stripe Checkout | 订单 ID 作为 Provider 幂等键；保证范围受 Stripe 幂等保留语义限制 |
 | Order 与 RabbitMQ | 最终一致性意图，但没有 Outbox，可能永久分叉 |
 | Stripe 与本地 Order | publish error 返回 503，但无本地 ledger/Outbox、confirms 和对账，仍只有最终一致性意图 |
-| Stock 与 Order | 只有时间点检查，不存在库存一致性闭环 |
+| Stock 与 Order | MySQL 原子预占和确认/释放；跨 Mongo/MySQL 仍非原子，自动到期核查未实现 |
 | Kitchen 与 Order | 至少一次触发意图，副作用未去重 |
 
 “最终一致”只有在系统具备持续重试、持久化待办或对账修复时才是完整承诺。对 R1、R2、R4、
-R8 等场景，当前没有自动恢复路径，因此这里只能称为“最终一致性意图”。
+到期预占、Provider 已支付但回调无法恢复等场景仍没有完整自动对账，因此只能称为
+有限范围内的恢复能力。
 
 ## 7. 现有验证范围
 
@@ -211,11 +212,12 @@ make verify
 
 它验证所有 module 能编译，并对支付重投涉及的 Order 包运行 `-race`。当前没有验证：
 
-- 真实 RabbitMQ 断连、redelivery、publisher confirms 或 DLQ replay；
+- 真实 RabbitMQ 断连后的自动重连、redelivery 或 DLQ replay；隔离 Broker 集成测试已覆盖
+  durable queue、定向 retry、publisher confirms 与不可路由拒绝；
 - MongoDB 与 RabbitMQ 之间的 crash point；
 - 真实 Stripe webhook 重放与 Provider 查询对账；离线测试已覆盖合法测试签名、非法签名和
   RabbitMQ publish 返回 error；
-- MySQL 并发预占；
+- 跨 Mongo/MySQL/RabbitMQ 的完整故障注入；隔离 MySQL 集成测试已覆盖并发预占；
 - Kitchen 重复副作用；
 - 完整业务服务从下单到履约的自动化链路。
 

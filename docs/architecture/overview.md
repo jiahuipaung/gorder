@@ -7,7 +7,7 @@
 
 ## 1. 系统定位与边界
 
-GOrder 把一条简化交易流程拆成四个进程：Order 管理订单，Stock 检查商品库存，Payment
+GOrder 把一条简化交易流程拆成四个进程：Order 管理订单，Stock 检查并预占商品库存，Payment
 创建支付链接并接收支付平台回调，Kitchen 在支付后模拟履约。服务之间同时使用同步 gRPC
 和异步 RabbitMQ；订单与库存分别写入 MongoDB 和 MySQL。
 
@@ -26,14 +26,14 @@ flowchart LR
 系统内边界包括：
 
 - 接收客户创建、查询订单的请求；
-- 查询当前库存并组装订单商品信息；
+- 查询并预占库存，组装订单商品信息；
 - 创建外部支付链接并处理支付成功 webhook；
 - 把支付成功推进为订单状态变化，并触发模拟履约；
 - 通过 Consul 发现 Order 和 Stock 的 gRPC 地址；
 - 通过 OpenTelemetry instrumentation 向 Jaeger 导出 HTTP/gRPC trace。
 
-当前明确不在闭环内：账户、购物车、商品后台、退款、真实发货、库存预占、Outbox、通用
-Inbox、对账、鉴权、多环境部署和容量治理。
+当前明确不在闭环内：账户、购物车、商品后台、退款、真实发货、到期自动释放、Outbox、通用
+Inbox、Provider 对账、鉴权、多环境部署和容量治理。预占细节见[库存预占边界](inventory-reservation.md)。
 
 ## 2. 服务与组件
 
@@ -50,7 +50,7 @@ flowchart TB
     end
 
     Client -->|HTTP :8282| Order
-    Order -->|gRPC CheckIfItemsInStock| Stock
+    Order -->|gRPC Check / Reserve| Stock
     Order --> Mongo[(MongoDB)]
     Stock --> MySQL[(MySQL)]
 
@@ -58,6 +58,7 @@ flowchart TB
     MQ --> Payment
     Payment -->|HTTPS API| Stripe
     Stripe -->|HTTP webhook :8284| Payment
+    Payment -->|gRPC Confirm reservation| Stock
     Payment -->|gRPC AttachPaymentSession| Order
     Payment -->|order.paid| MQ
     MQ --> Order
@@ -76,7 +77,7 @@ flowchart TB
 | 进程 | 当前职责 | 入口 | 下游依赖 | 状态存储 |
 |---|---|---|---|---|
 | Order Service | 创建、查询订单；通过显式命令约束主流程状态迁移 | HTTP、gRPC、`order.paid` consumer | Stock gRPC、RabbitMQ、MongoDB | MongoDB `order.order` collection |
-| Stock Service | 读取库存数量；判断请求商品是否有足够库存；获取 Stripe Price ID | gRPC | MySQL、Stripe API | MySQL `o_stock` table |
+| Stock Service | 查询商品、原子预占/确认/释放库存；获取 Stripe Price ID | gRPC | MySQL、Stripe API | MySQL `o_stock` 与 reservation tables |
 | Payment Service | 消费订单创建事件；创建支付链接；回写支付链接；验证 Stripe webhook 并发布支付结果 | `order.create` consumer、HTTP webhook | Order gRPC、Stripe、RabbitMQ | 没有本地业务数据库 |
 | Kitchen Worker | 消费已支付事件；等待模拟处理；把订单更新为 `ready` | `order.paid` consumer | Order gRPC、RabbitMQ | 没有本地业务数据库 |
 
@@ -89,7 +90,7 @@ flowchart TB
 |---|---|---|
 | HTTP | Client → Order | 创建订单、按客户和订单 ID 查询订单 |
 | HTTP | Stripe → Payment | Stripe webhook；处理 `checkout.session.completed` |
-| gRPC | Order → Stock | `CheckIfItemsInStock`；另有 `GetItems` 契约但 repository 实现不完整 |
+| gRPC | Order → Stock | `CheckIfItemsInStock`、`Reserve`、`GetReservation`；`GetItems` 显式返回 Unimplemented |
 | gRPC | Payment → Order | `AttachPaymentSession` 挂接支付链接并推进预期状态 |
 | gRPC | Kitchen → Order | `MarkOrderReady` 从已支付状态推进 `ready` |
 | RabbitMQ | Order → Payment | `order.create` |
@@ -115,7 +116,7 @@ flowchart TB
 | 数据/控制 | 当前权威 | 说明 |
 |---|---|---|
 | 订单主体、状态、支付链接、商品快照 | Order / MongoDB | 由 Order repository 读写 |
-| 当前库存数量 | Stock / MySQL | 只提供检查；尚无预占、扣减和释放 |
+| 可用库存与预占状态 | Stock / MySQL | Reserve 原子扣可用数量；Confirm 不重复扣减；Release 恢复一次 |
 | 支付会话和支付结果 | Stripe | Payment 通过 API 创建会话，通过签名 webhook 接收结果 |
 | 跨服务通知 | RabbitMQ | 使用持久化消息和手动 ACK；不等于业务状态本身 |
 | gRPC 服务地址 | Consul | Order、Stock 注册；调用方发现它们的地址 |
@@ -198,7 +199,7 @@ Compose **不包含** Order、Stock、Payment、Kitchen 业务容器，也不包
 
 - 显式订单迁移与 consumer correctness 有当前自动化证据，不能外推到所有外部副作用；
 - 通用 `UpdateOrder` 已删除，但取消、退款、库存确认等完整流程状态仍未建模；
-- Stock 只检查当前数量，不拥有完整库存生命周期；
+- Stock 已有预占状态机，但缺少 Provider 核查后的自动到期释放；
 - DB 写入和 RabbitMQ 发布之间没有 Outbox；
 - 当前项目是工程重建和设计验证，不是生产系统源码或生产就绪模板。
 

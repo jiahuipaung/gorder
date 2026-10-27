@@ -14,6 +14,8 @@ type MySQL struct {
 	db *gorm.DB
 }
 
+func (d *MySQL) DB() *gorm.DB { return d.db }
+
 func NewMySQL() *MySQL {
 	dsn := fmt.Sprintf(
 		"%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jiahuipaung/gorder/order/entity"
+	"time"
 )
 
 const (
@@ -11,6 +12,7 @@ const (
 	StatusWaitingForPayment = "waiting_for_payment"
 	StatusPaid              = "paid"
 	StatusReady             = "ready"
+	StatusStockRejected     = "stock_rejected"
 )
 
 // Aggregate聚合
@@ -20,6 +22,7 @@ type Order struct {
 	Status      string
 	PaymentLink string
 	Items       []*entity.Item
+	ExpiresAt   time.Time
 }
 
 func NewOrder(customerID, ID, status, paymentLink string, items []*entity.Item) (*Order, error) {

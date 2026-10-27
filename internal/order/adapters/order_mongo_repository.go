@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	_ "github.com/jiahuipaung/gorder/common/config"
 	domain "github.com/jiahuipaung/gorder/order/domain/order"
 	"github.com/jiahuipaung/gorder/order/entity"
@@ -11,6 +12,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"time"
 )
 
@@ -32,12 +34,14 @@ func (r *OrderRepositoryMongo) collection() *mongo.Collection {
 }
 
 type orderModel struct {
-	MongoID     primitive.ObjectID `bson:"_id"`
-	ID          string             `bson:"id"`
-	CustomerID  string             `bson:"customer_id"`
-	Status      string             `bson:"status"`
-	PaymentLink string             `bson:"payment_link"`
-	Items       []*entity.Item     `bson:"items"`
+	MongoID         primitive.ObjectID `bson:"_id"`
+	ID              string             `bson:"id"`
+	CustomerID      string             `bson:"customer_id"`
+	Status          string             `bson:"status"`
+	PaymentLink     string             `bson:"payment_link"`
+	Items           []*entity.Item     `bson:"items"`
+	ExpiresAt       time.Time          `bson:"expires_at"`
+	CreatePublished bool               `bson:"create_published"`
 }
 
 func (r *OrderRepositoryMongo) Create(ctx context.Context, order *domain.Order) (created *domain.Order, err error) {
@@ -68,6 +72,73 @@ func (r *OrderRepositoryMongo) Get(ctx context.Context, id, customerID string) (
 	}
 	got = r.unmarshal(read)
 	return
+}
+
+// ListPending pages through durable order intents that still need reservation
+// or confirmed publication. Expired intents require payment reconciliation.
+func (r *OrderRepositoryMongo) ListPending(ctx context.Context, after string, limit int) ([]*domain.Order, error) {
+	if limit <= 0 || limit > 500 {
+		return nil, fmt.Errorf("invalid pending page limit")
+	}
+	filter := bson.M{"status": domain.StatusPending, "expires_at": bson.M{"$gt": time.Now().UTC()}, "create_published": bson.M{"$ne": true}}
+	if after != "" {
+		id, err := primitive.ObjectIDFromHex(after)
+		if err != nil {
+			return nil, err
+		}
+		filter["_id"] = bson.M{"$gt": id}
+	}
+	cursor, err := r.collection().Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "_id", Value: 1}}).SetLimit(int64(limit)))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var result []*domain.Order
+	for cursor.Next(ctx) {
+		var row orderModel
+		if err := cursor.Decode(&row); err != nil {
+			return nil, err
+		}
+		result = append(result, r.unmarshal(&row))
+	}
+	return result, cursor.Err()
+}
+
+func (r *OrderRepositoryMongo) MarkCreatePublished(ctx context.Context, id, customerID string) error {
+	mongoID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return domain.NotFoundError{OrderID: id}
+	}
+	result, err := r.collection().UpdateOne(ctx, bson.M{"_id": mongoID, "customer_id": customerID}, bson.M{"$set": bson.M{"create_published": true}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return domain.NotFoundError{OrderID: id}
+	}
+	return nil
+}
+
+func (r *OrderRepositoryMongo) RejectStock(ctx context.Context, id, customerID string) error {
+	mongoID, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		return domain.NotFoundError{OrderID: id}
+	}
+	result, err := r.collection().UpdateOne(ctx, bson.M{"_id": mongoID, "customer_id": customerID, "status": domain.StatusPending}, bson.M{"$set": bson.M{"status": domain.StatusStockRejected}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 1 {
+		return nil
+	}
+	current, err := r.Get(ctx, id, customerID)
+	if err != nil {
+		return err
+	}
+	if current.Status == domain.StatusStockRejected {
+		return nil
+	}
+	return domain.InvalidStatusTransitionError{OrderID: id, CurrentStatus: current.Status, TargetStatus: domain.StatusStockRejected}
 }
 
 func (r *OrderRepositoryMongo) AttachPaymentSession(
@@ -106,7 +177,9 @@ func (r *OrderRepositoryMongo) MarkPaid(
 		domain.StatusWaitingForPayment,
 		domain.StatusPaid,
 		updates,
-		func(current *domain.Order) bool { return current.Status == domain.StatusPaid },
+		func(current *domain.Order) bool {
+			return current.Status == domain.StatusPaid || current.Status == domain.StatusReady
+		},
 	)
 }
 
@@ -173,6 +246,7 @@ func (r *OrderRepositoryMongo) marshalToModel(order *domain.Order) *orderModel {
 		Status:      order.Status,
 		PaymentLink: order.PaymentLink,
 		Items:       order.Items,
+		ExpiresAt:   order.ExpiresAt,
 	}
 }
 
@@ -183,6 +257,7 @@ func (r *OrderRepositoryMongo) unmarshal(model *orderModel) *domain.Order {
 		Status:      model.Status,
 		PaymentLink: model.PaymentLink,
 		Items:       model.Items,
+		ExpiresAt:   model.ExpiresAt,
 	}
 }
 

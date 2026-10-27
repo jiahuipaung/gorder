@@ -23,12 +23,14 @@ type Order struct {
 
 type OrderService interface {
 	MarkOrderReady(ctx context.Context, orderID, customerID string) error
+	GetStatus(ctx context.Context, orderID, customerID string) (string, error)
 }
 
 type Consumer struct {
 	orderGRPC    OrderService
 	retryHandler RetryHandler
 	cookHandler  CookHandler
+	deferWait    func(context.Context)
 }
 
 type RetryHandler func(context.Context, *amqp.Channel, *amqp.Delivery) error
@@ -37,14 +39,24 @@ type CookHandler func(*Order)
 
 func NewConsumer(orderGRPC OrderService) *Consumer {
 	return &Consumer{
-		orderGRPC:    orderGRPC,
-		retryHandler: broker.HandleRetry,
-		cookHandler:  cook,
+		orderGRPC: orderGRPC,
+		retryHandler: func(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery) error {
+			return broker.HandleRetryToQueue(ctx, ch, d, broker.KitchenPaidQueue)
+		},
+		cookHandler: cook,
+		deferWait: func(ctx context.Context) {
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+		},
 	}
 }
 
 func (c *Consumer) Listen(ch *amqp.Channel) {
-	q, err := ch.QueueDeclare("", true, false, true, false, nil)
+	q, err := ch.QueueDeclare(broker.KitchenPaidQueue, true, false, false, false, nil)
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -55,12 +67,13 @@ func (c *Consumer) Listen(ch *amqp.Channel) {
 
 	msgs, err := ch.Consume(q.Name, "", false, false, false, false, nil)
 	if err != nil {
-		logrus.Warnf("fail to consume: queue=%s, err=%v", q.Name, err)
+		logrus.Fatalf("fail to consume: queue=%s, err=%v", q.Name, err)
 	}
 
 	for msg := range msgs {
 		c.handleMessage(msg, q, ch)
 	}
+	logrus.Fatal("kitchen consumer subscription closed")
 }
 
 func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Channel) {
@@ -79,6 +92,25 @@ func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Chann
 	if o.Status != "paid" {
 		logrus.Warnf("order not paid, cannot cook: order=%s status=%s", o.ID, o.Status)
 		_ = msg.Nack(false, false)
+		return
+	}
+	persistedStatus, err := c.orderGRPC.GetStatus(mqCtx, o.ID, o.CustomerID)
+	if err == nil && persistedStatus == "ready" {
+		_ = msg.Ack(false)
+		return
+	}
+	if err != nil || persistedStatus != "paid" {
+		if err != nil {
+			logrus.Warnf("kitchen: cannot verify paid order %s: %v", o.ID, err)
+		}
+		// This is not a failed fulfilment attempt. Order and Kitchen receive
+		// separate paid deliveries, so Order may simply be behind. Keep the
+		// original delivery until paid is visible; finite retry/DLQ would
+		// strand a valid payment during a longer Order outage.
+		if c.deferWait != nil {
+			c.deferWait(mqCtx)
+		}
+		_ = msg.Nack(false, true)
 		return
 	}
 

@@ -23,17 +23,19 @@ type RetryHandler func(context.Context, *amqp.Channel, *amqp.Delivery) error
 
 func NewConsumer(app app.Application) *Consumer {
 	return &Consumer{
-		app:   app,
-		retry: broker.HandleRetry,
+		app: app,
+		retry: func(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery) error {
+			return broker.HandleRetryToQueue(ctx, ch, d, broker.OrderPaidQueue)
+		},
 	}
 }
 
 func (c *Consumer) Listen(ch *amqp.Channel) {
-	q, err := ch.QueueDeclare(broker.EventOrderPaid, true, false, true, false, nil)
+	q, err := ch.QueueDeclare(broker.OrderPaidQueue, true, false, false, false, nil)
 	if err != nil {
 		logrus.Fatal(err)
 	}
-	err = ch.QueueBind(q.Name, "", broker.EventOrderPaid, true, nil)
+	err = ch.QueueBind(q.Name, "", broker.EventOrderPaid, false, nil)
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -44,6 +46,7 @@ func (c *Consumer) Listen(ch *amqp.Channel) {
 	for msg := range msgs {
 		c.handleMessage(msg, q, ch)
 	}
+	logrus.Fatal("order consumer subscription closed")
 }
 
 func (c *Consumer) handleMessage(msg amqp.Delivery, q amqp.Queue, ch *amqp.Channel) {

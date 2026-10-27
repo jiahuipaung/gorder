@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
@@ -34,5 +35,12 @@ func TestNewCheckoutSessionParamsUsesOrderIDAsIdempotencyKey(t *testing.T) {
 	}
 	if params.LineItems[0].Quantity == nil || *params.LineItems[0].Quantity != 2 {
 		t.Fatalf("unexpected quantity: %v", params.LineItems[0].Quantity)
+	}
+	var eventItems []*orderpb.Item
+	if err := json.Unmarshal([]byte(params.Metadata["items"]), &eventItems); err != nil {
+		t.Fatal(err)
+	}
+	if len(eventItems) != 1 || eventItems[0].ID != "item-1" || eventItems[0].PriceID != "price-1" || eventItems[0].Quantity != 2 {
+		t.Fatalf("webhook cannot reconstruct order items: %+v", eventItems)
 	}
 }

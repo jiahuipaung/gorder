@@ -22,3 +22,11 @@ func (g *OrderGRPC) MarkOrderReady(ctx context.Context, orderID, customerID stri
 	logrus.Infof("kitchen_adapter.MarkOrderReady err:%v", err)
 	return err
 }
+
+func (g *OrderGRPC) GetStatus(ctx context.Context, orderID, customerID string) (string, error) {
+	o, err := g.Client.GetOrder(ctx, &orderpb.GetOrderRequest{OrderID: orderID, CustomerID: customerID})
+	if err != nil {
+		return "", err
+	}
+	return o.Status, nil
+}

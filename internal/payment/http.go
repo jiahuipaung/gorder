@@ -21,14 +21,22 @@ import (
 
 type PaymentHandler struct {
 	publisher Publisher
+	confirmer ReservationConfirmer
+}
+
+type ReservationConfirmer interface {
+	Confirm(context.Context, string, string) error
 }
 
 type Publisher interface {
 	PublishWithContext(context.Context, string, string, bool, bool, amqp.Publishing) error
 }
 
-func NewPaymentHandler(publisher Publisher) *PaymentHandler {
-	return &PaymentHandler{publisher: publisher}
+func NewPaymentHandler(publisher Publisher, confirmer ReservationConfirmer) *PaymentHandler {
+	if publisher == nil || confirmer == nil {
+		panic("publisher and reservation confirmer required")
+	}
+	return &PaymentHandler{publisher: publisher, confirmer: confirmer}
 }
 
 func (h *PaymentHandler) RegisterRoutes(c *gin.Engine) {
@@ -66,10 +74,32 @@ func (h *PaymentHandler) handleWebhook(c *gin.Context) {
 		}
 		if session.PaymentStatus == stripe.CheckoutSessionPaymentStatusPaid {
 			logrus.Infof("Payment for checksession %v is Paid\n", session.ID)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			ctx := c.Request.Context()
+			orderID, customerID := session.Metadata["orderID"], session.Metadata["customerID"]
+			if orderID == "" || customerID == "" {
+				c.JSON(http.StatusBadRequest, "paid session missing order identity")
+				return
+			}
 			var items []*orderpb.Item
-			_ = json.Unmarshal([]byte(session.Metadata["items"]), &items)
+			if err := json.Unmarshal([]byte(session.Metadata["items"]), &items); err != nil {
+				c.JSON(http.StatusBadRequest, "invalid paid order items")
+				return
+			}
+			if len(items) == 0 {
+				c.JSON(http.StatusBadRequest, "paid order items are empty")
+				return
+			}
+			for _, item := range items {
+				if item == nil || item.ID == "" || item.Quantity <= 0 {
+					c.JSON(http.StatusBadRequest, "invalid paid order item")
+					return
+				}
+			}
+			if err := h.confirmer.Confirm(ctx, orderID, customerID); err != nil {
+				logrus.Errorf("paid reservation confirmation failed order=%s: %v", orderID, err)
+				c.JSON(http.StatusServiceUnavailable, err.Error())
+				return
+			}
 			marshalledOrder, err := json.Marshal(&domain.Order{
 				ID:          session.Metadata["orderID"],
 				Status:      string(stripe.CheckoutSessionPaymentStatusPaid),

@@ -10,9 +10,21 @@ import (
 
 type orderServiceStub struct {
 	err         error
+	statusErr   error
+	status      string
 	calls       int
 	orderIDs    []string
 	customerIDs []string
+}
+
+func (s *orderServiceStub) GetStatus(context.Context, string, string) (string, error) {
+	if s.statusErr != nil {
+		return "", s.statusErr
+	}
+	if s.status == "" {
+		return "paid", nil
+	}
+	return s.status, nil
 }
 
 func (s *orderServiceStub) MarkOrderReady(_ context.Context, orderID, customerID string) error {
@@ -119,6 +131,42 @@ func TestHandleMessageCooksAndAcknowledgesPaidOrder(t *testing.T) {
 	}
 	if orders.orderIDs[0] != "order-1" || orders.customerIDs[0] != "customer-1" {
 		t.Fatalf("unexpected ready order identity: order=%q customer=%q", orders.orderIDs[0], orders.customerIDs[0])
+	}
+	assertConfirmation(t, acks, 1, 0, nil)
+}
+
+func TestHandleMessageWaitsForPersistedPaidState(t *testing.T) {
+	orders := &orderServiceStub{status: "waiting_for_payment"}
+	cookCalls, retryCalls := 0, 0
+	c := Consumer{orderGRPC: orders, cookHandler: func(*Order) { cookCalls++ }, retryHandler: func(context.Context, *amqp.Channel, *amqp.Delivery) error { retryCalls++; return nil }}
+	acks := &acknowledgementSpy{}
+	c.handleMessage(amqp.Delivery{Acknowledger: acks, DeliveryTag: 31, Body: []byte(`{"ID":"order-1","CustomerID":"customer-1","Status":"paid"}`)}, amqp.Queue{Name: "order.paid"}, nil)
+	if cookCalls != 0 || orders.calls != 0 || retryCalls != 0 {
+		t.Fatalf("cook=%d ready=%d retry=%d", cookCalls, orders.calls, retryCalls)
+	}
+	assertConfirmation(t, acks, 0, 1, []bool{true})
+}
+
+func TestHandleMessageKeepsPaidDeliveryDuringOrderOutage(t *testing.T) {
+	orders := &orderServiceStub{statusErr: errors.New("order unavailable")}
+	retryCalls, cookCalls := 0, 0
+	c := Consumer{orderGRPC: orders, cookHandler: func(*Order) { cookCalls++ }, retryHandler: func(context.Context, *amqp.Channel, *amqp.Delivery) error { retryCalls++; return nil }}
+	acks := &acknowledgementSpy{}
+	c.handleMessage(amqp.Delivery{Acknowledger: acks, DeliveryTag: 33, Body: []byte(`{"ID":"order-1","CustomerID":"customer-1","Status":"paid"}`)}, amqp.Queue{Name: "order.paid"}, nil)
+	if cookCalls != 0 || orders.calls != 0 || retryCalls != 0 {
+		t.Fatalf("cook=%d ready=%d retry=%d", cookCalls, orders.calls, retryCalls)
+	}
+	assertConfirmation(t, acks, 0, 1, []bool{true})
+}
+
+func TestHandleMessageSkipsAlreadyReadyReplay(t *testing.T) {
+	orders := &orderServiceStub{status: "ready"}
+	cookCalls := 0
+	c := Consumer{orderGRPC: orders, cookHandler: func(*Order) { cookCalls++ }}
+	acks := &acknowledgementSpy{}
+	c.handleMessage(amqp.Delivery{Acknowledger: acks, DeliveryTag: 32, Body: []byte(`{"ID":"order-1","CustomerID":"customer-1","Status":"paid"}`)}, amqp.Queue{Name: "order.paid"}, nil)
+	if cookCalls != 0 || orders.calls != 0 {
+		t.Fatalf("ready replay cooked=%d ready=%d", cookCalls, orders.calls)
 	}
 	assertConfirmation(t, acks, 1, 0, nil)
 }

@@ -31,6 +31,10 @@ func (s *HTTPServer) PostCustomerCustomerIdOrders(c *gin.Context, customerID str
 	if err = c.ShouldBindJSON(&req); err != nil {
 		return
 	}
+	if customerID == "" || req.CustomerId != customerID {
+		err = fmt.Errorf("customer ID in path and request body must match")
+		return
+	}
 	r, err := s.app.Commands.CreateOrder.Handler(c.Request.Context(), command.CreateOrder{
 		CustomerID: req.CustomerId,
 		Items:      convertor.NewItemWithQuantityConverter().ClientToEntities(req.Items),

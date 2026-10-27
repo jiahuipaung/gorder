@@ -22,7 +22,7 @@ flowchart LR
 | 数据 | 当前写入者 | 当前读取者 | 权威与限制 |
 |---|---|---|---|
 | 订单 ID、客户 ID、状态、支付链接、商品快照 | Order | Order API、Order consumer、经 gRPC 的 Payment/Kitchen | MongoDB 是仓库内的持久化权威 |
-| 商品当前库存数量 | Stock | Stock query | MySQL `o_stock` 是当前数量来源，但只读不扣减 |
+| 商品可用数量与预占状态 | Stock | Stock transaction | MySQL `o_stock` 和预占表；Reserve 扣可用数量 |
 | 商品支付 Price ID | Stripe Product API | Stock | 调用时动态读取，没有本地商品主数据表 |
 | Checkout Session 与支付结果 | Stripe | Payment | Provider 是支付事实来源；本地没有支付交易表 |
 | 创建/支付通知 | Order、Payment | Payment、Order、Kitchen | RabbitMQ 负责传递，不是业务状态权威 |
@@ -52,7 +52,7 @@ MongoDB model 当前保存：
 | `customer_id` | 创建订单请求 | 与 `_id` 一起隔离客户订单 |
 | `status` | 创建时为 `pending`；后续显式命令推进 | 三条迁移都以预期旧状态作为更新条件 |
 | `payment_link` | `AttachPaymentSession` 写入 Stripe URL | 同链接重放 no-op；不同链接拒绝覆盖；paid event 空链接保留本地值 |
-| `items` | Stock 校验后返回的订单商品快照 | 不是实时库存，也不代表已预占 |
+| `items` | Stock 校验后返回的订单商品快照 | 快照本身不代表预占；需按订单 ID 查询 reservation |
 
 Order repository 暴露五类操作：
 
@@ -112,7 +112,7 @@ protobuf 不再暴露 `UpdateOrder(Order)`。Payment 只能发送订单 ID、客
 
 ## 5. 库存数据模型
 
-MySQL 初始化脚本只创建 `o_stock`：
+MySQL 初始化脚本创建 `o_stock`，Stock 启动迁移创建预占记录表：
 
 ```text
 id, product_id, quantity, created_at, updated_at
@@ -126,11 +126,10 @@ id, product_id, quantity, created_at, updated_at
 4. 数量足够时，从 Stripe Product API 取得 Price ID；
 5. 返回用于创建订单的商品快照。
 
-它没有写 MySQL，源码保留了“扣库存”的 TODO。`GetItems` 虽然存在 gRPC 契约和 query
-handler，但 MySQL repository 对应方法仍为 `panic("implement me")`。
-
-因此 `quantity` 目前只能解释为“检查时读取到的可用数量”，不能解释为已售、已锁、在途、
-预占或最终库存。
+`CheckIfItemsInStock` 只是前置校验，不改变库存。Order 随后用同一订单 ID 调用 `Reserve`；
+Stock 在单个 MySQL 事务中扣减可用数量并记录预占，`Confirm` 不再扣减，`Release` 恢复一次。
+`GetItems` 契约保留，但当前显式返回 `Unimplemented`，不会 panic。
+`quantity` 因而表示当前可用数量，不表示物理在手或已售总量。详见[库存预占边界](inventory-reservation.md)。
 
 ## 6. 事件语义
 
@@ -156,7 +155,7 @@ handler，但 MySQL repository 对应方法仍为 `panic("implement me")`。
 | 消费者 | Order consumer、Kitchen consumer |
 | 消息体 | 从 Stripe Checkout Session metadata 还原的 Order-like JSON |
 | 传输 | `order.paid` fanout exchange |
-| 持久性 | `DeliveryMode=Persistent`；consumer queue 的生命周期配置并不完全一致 |
+| 持久性 | `DeliveryMode=Persistent`；Order 与 Kitchen 各有 durable consumer queue |
 | 业务身份 | Stripe event ID 没有进入 payload/Inbox，`MessageId` 未显式设置 |
 | trace | webhook 发布时注入 propagation headers，consumer 提取 |
 
@@ -169,7 +168,7 @@ consumer 独立确认，一个 consumer 成功不代表另一个成功。
 |---|---|---|
 | Order 单文档主流程迁移 | 三条条件更新原子；精确重放为 no-op | 取消、退款、履约中等更完整状态机 |
 | Order 与消息 | 消息可持久化、手动确认 | MongoDB commit 与 publish 原子性 |
-| Stock 与 Order | 创建前同步检查当前数量 | 预占、扣减、超卖防护、订单取消释放 |
+| Stock 与 Order | MySQL 原子预占与确认/释放；Order 意图可在到期前重试 | 自动取消释放、Provider 未知结果对账、跨库原子性 |
 | Stripe 与本地订单 | Checkout 以订单 ID 幂等创建；签名 webhook 能触发本地事件 | 幂等键保留期之外的对账、publish 失败恢复、退款和争议 |
 | Kitchen 与 Order | `paid -> ready` 有原子前置条件和重放 no-op | `cook` 履约副作用幂等 |
 

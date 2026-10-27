@@ -40,10 +40,15 @@ func NewApplication(ctx context.Context) (app.Application, func()) {
 	}
 }
 
-func newApplication(_ context.Context, stockGrpc query.StockService, channel *amqp.Channel) app.Application {
+func newApplication(ctx context.Context, stockGrpc query.StockService, channel *amqp.Channel) app.Application {
 	//orderRepo := adapters.NewMemoryOrderRepository()
 	mongoClient := newMongoClient()
 	orderRepo := adapters.NewOrderRepositoryMongo(mongoClient)
+	publisher, err := broker.ConfirmedPublisherFor(channel)
+	if err != nil {
+		panic(err)
+	}
+	go runPendingRecovery(ctx, orderRepo, stockGrpc, publisher)
 	logger := logrus.NewEntry(logrus.StandardLogger())
 	metricsClient := metrics.TodoMetrics{}
 	return app.Application{
@@ -62,6 +67,7 @@ func newApplication(_ context.Context, stockGrpc query.StockService, channel *am
 			),
 			MarkOrderPaid: command.NewMarkOrderPaidHandler(
 				orderRepo,
+				stockGrpc,
 				logger,
 				metricsClient,
 			),

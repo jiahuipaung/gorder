@@ -1,3 +1,6 @@
+//go:build live
+
+// This smoke test requires a separately running GOrder stack and Stripe test products.
 package tests
 
 import (
@@ -51,7 +54,7 @@ func TestCreateOrder_success(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	assert.Equal(t, http.StatusOK, response.StatusCode())
 	assert.Equal(t, 0, response.JSON200.Errno)

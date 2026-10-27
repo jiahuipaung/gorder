@@ -8,6 +8,10 @@ import "orderpb/order.proto";
 service StockService {
   rpc GetItems(GetItemsRequest) returns (GetItemsResponse);
   rpc CheckIfItemsInStock(CheckIfItemsInStockRequest) returns (CheckIfItemsInStockResponse);
+  rpc Reserve(ReserveRequest) returns (ReservationResponse);
+  rpc Confirm(ReservationKey) returns (ReservationResponse);
+  rpc Release(ReservationKey) returns (ReservationResponse);
+  rpc GetReservation(ReservationKey) returns (ReservationResponse);
 }
 
 message GetItemsRequest {
@@ -26,4 +30,23 @@ message CheckIfItemsInStockRequest {
 message CheckIfItemsInStockResponse {
   int32 InStock = 1;
   repeated orderpb.Item Items = 2;
+}
+
+message ReserveRequest {
+  string reservation_id = 1;
+  string customer_id = 2;
+  repeated orderpb.ItemWithQuantity items = 3;
+  int64 expires_at_unix_millis = 4;
+}
+
+message ReservationKey {
+  string reservation_id = 1;
+  string customer_id = 2;
+}
+
+message ReservationResponse {
+  string reservation_id = 1;
+  string customer_id = 2;
+  string status = 3;
+  int64 expires_at_unix_millis = 4;
 }
