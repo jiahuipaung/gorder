@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	_ "github.com/jiahuipaung/gorder/common/config"
 	domain "github.com/jiahuipaung/gorder/order/domain/order"
 	"github.com/jiahuipaung/gorder/order/entity"
@@ -54,69 +55,114 @@ func (r *OrderRepositoryMongo) Create(ctx context.Context, order *domain.Order) 
 func (r *OrderRepositoryMongo) Get(ctx context.Context, id, customerID string) (got *domain.Order, err error) {
 	defer r.logWithTag("get", err, nil, got)
 	read := &orderModel{}
-	mongoID, _ := primitive.ObjectIDFromHex(id)
-	condition := bson.M{"_id": mongoID}
-	if err = r.collection().FindOne(ctx, condition).Decode(read); err != nil {
-		return
-	}
-	if read == nil {
+	mongoID, parseErr := primitive.ObjectIDFromHex(id)
+	if parseErr != nil {
 		return nil, domain.NotFoundError{OrderID: id}
+	}
+	condition := bson.M{"_id": mongoID, "customer_id": customerID}
+	if err = r.collection().FindOne(ctx, condition).Decode(read); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, domain.NotFoundError{OrderID: id}
+		}
+		return
 	}
 	got = r.unmarshal(read)
 	return
 }
 
-// Update 先查找对应order，然后apply updateFn，再写入回去
-func (r *OrderRepositoryMongo) Update(
+func (r *OrderRepositoryMongo) AttachPaymentSession(
 	ctx context.Context,
-	o *domain.Order,
-	updateFn func(context.Context, *domain.Order) (*domain.Order, error)) (err error) {
-	defer r.logWithTag("update", err, o, nil)
-	if o == nil {
-		panic("order is nil")
-	}
-	// 事务
-	session, err := r.db.StartSession()
-	if err != nil {
-		return
-	}
-	defer session.EndSession(ctx)
-
-	if err = session.StartTransaction(); err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = session.AbortTransaction(ctx)
-		} else {
-			_ = session.CommitTransaction(ctx)
-		}
-	}()
-
-	// inside transaction
-	oldOrder, err := r.Get(ctx, o.ID, o.CustomerID)
-	if err != nil {
-		return err
-	}
-	updated, err := updateFn(ctx, o)
-	if err != nil {
-		return
-	}
-	logrus.Infof("update||oldOrder=%v||updated=%v", oldOrder, updated)
-	mongoID, _ := primitive.ObjectIDFromHex(oldOrder.ID)
-	res, err := r.collection().UpdateOne(
+	orderID, customerID, paymentLink string,
+) (bool, error) {
+	return r.transitionStatus(
 		ctx,
-		bson.M{"_id": mongoID, "customer_id": oldOrder.CustomerID},
-		bson.M{"$set": bson.M{
-			"status":       updated.Status,
-			"payment_link": updated.PaymentLink,
-		}},
+		orderID,
+		customerID,
+		domain.StatusPending,
+		domain.StatusWaitingForPayment,
+		bson.M{
+			"status":       domain.StatusWaitingForPayment,
+			"payment_link": paymentLink,
+		},
+		func(current *domain.Order) bool {
+			return current.Status == domain.StatusWaitingForPayment &&
+				current.PaymentLink == paymentLink
+		},
+	)
+}
+
+func (r *OrderRepositoryMongo) MarkPaid(
+	ctx context.Context,
+	orderID, customerID, paymentLink string,
+) (bool, error) {
+	updates := bson.M{"status": domain.StatusPaid}
+	if paymentLink != "" {
+		updates["payment_link"] = paymentLink
+	}
+	return r.transitionStatus(
+		ctx,
+		orderID,
+		customerID,
+		domain.StatusWaitingForPayment,
+		domain.StatusPaid,
+		updates,
+		func(current *domain.Order) bool { return current.Status == domain.StatusPaid },
+	)
+}
+
+func (r *OrderRepositoryMongo) MarkReady(
+	ctx context.Context,
+	orderID, customerID string,
+) (bool, error) {
+	return r.transitionStatus(
+		ctx,
+		orderID,
+		customerID,
+		domain.StatusPaid,
+		domain.StatusReady,
+		bson.M{"status": domain.StatusReady},
+		func(current *domain.Order) bool { return current.Status == domain.StatusReady },
+	)
+}
+
+func (r *OrderRepositoryMongo) transitionStatus(
+	ctx context.Context,
+	orderID, customerID, expectedStatus, targetStatus string,
+	updates bson.M,
+	isReplay func(*domain.Order) bool,
+) (bool, error) {
+	mongoID, err := primitive.ObjectIDFromHex(orderID)
+	if err != nil {
+		return false, domain.NotFoundError{OrderID: orderID}
+	}
+	result, err := r.collection().UpdateOne(
+		ctx,
+		bson.M{
+			"_id":         mongoID,
+			"customer_id": customerID,
+			"status":      expectedStatus,
+		},
+		bson.M{"$set": updates},
 	)
 	if err != nil {
-		return
+		return false, err
 	}
-	r.logWithTag("finish_update", err, o, res)
-	return
+	if result.ModifiedCount == 1 {
+		return true, nil
+	}
+
+	current, err := r.Get(ctx, orderID, customerID)
+	if err != nil {
+		return false, err
+	}
+	if isReplay(current) {
+		return false, nil
+	}
+	return false, domain.InvalidStatusTransitionError{
+		OrderID:       orderID,
+		CurrentStatus: current.Status,
+		TargetStatus:  targetStatus,
+	}
 }
 
 func (r *OrderRepositoryMongo) marshalToModel(order *domain.Order) *orderModel {

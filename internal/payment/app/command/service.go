@@ -1,11 +1,7 @@
 package command
 
-import (
-	"context"
-
-	"github.com/jiahuipaung/gorder/common/genproto/orderpb"
-)
+import "context"
 
 type OrderService interface {
-	UpdateOrder(ctx context.Context, order *orderpb.Order) error
+	AttachPaymentSession(ctx context.Context, orderID, customerID, paymentLink string) error
 }

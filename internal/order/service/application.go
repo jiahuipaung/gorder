@@ -55,7 +55,17 @@ func newApplication(_ context.Context, stockGrpc query.StockService, channel *am
 				channel,
 				metricsClient,
 			),
-			UpdateOrder: command.NewUpdateOrderHandler(
+			AttachPaymentSession: command.NewAttachPaymentSessionHandler(
+				orderRepo,
+				logger,
+				metricsClient,
+			),
+			MarkOrderPaid: command.NewMarkOrderPaidHandler(
+				orderRepo,
+				logger,
+				metricsClient,
+			),
+			MarkOrderReady: command.NewMarkOrderReadyHandler(
 				orderRepo,
 				logger,
 				metricsClient,

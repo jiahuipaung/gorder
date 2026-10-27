@@ -24,10 +24,12 @@ go.work.sum
 # env file
 .env
 .idea
+.vscode/
 .DS_Store
 .gobincache/
 
 
 **/mysql_data/
+data/
 **/tmp/
 **/bin/

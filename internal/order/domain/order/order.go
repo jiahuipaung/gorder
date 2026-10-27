@@ -4,8 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jiahuipaung/gorder/order/entity"
+)
 
-	"github.com/stripe/stripe-go/v81"
+const (
+	StatusPending           = "pending"
+	StatusWaitingForPayment = "waiting_for_payment"
+	StatusPaid              = "paid"
+	StatusReady             = "ready"
 )
 
 // Aggregate聚合
@@ -40,7 +45,7 @@ func NewOrder(customerID, ID, status, paymentLink string, items []*entity.Item) 
 }
 
 func (o Order) IsPaid() error {
-	if o.Status == string(stripe.CheckoutSessionPaymentStatusPaid) {
+	if o.Status == StatusPaid {
 		return nil
 	}
 	return fmt.Errorf("order %s is not paid", o.ID)

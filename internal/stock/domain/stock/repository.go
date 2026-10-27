@@ -31,7 +31,7 @@ type ExceedStockError struct {
 func (e ExceedStockError) Error() string {
 	var info []string
 	for _, item := range e.FailedOn {
-		info = append(info, fmt.Sprintf("product_id=%s, want=%s, have=%s", item.ID, item.Want, item.Have))
+		info = append(info, fmt.Sprintf("product_id=%s, want=%d, have=%d", item.ID, item.Want, item.Have))
 	}
 	return fmt.Sprintf("not enough stock for [%s]", strings.Join(info, ","))
 }

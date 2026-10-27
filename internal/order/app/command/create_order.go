@@ -74,10 +74,7 @@ func (c createOrderHandler) Handler(ctx context.Context, cmd CreateOrder) (*Crea
 	if err != nil {
 		return nil, err
 	}
-	o, err := c.orderRepo.Create(ctx, &domain.Order{
-		CustomerID: cmd.CustomerID,
-		Items:      validItems,
-	})
+	o, err := c.orderRepo.Create(ctx, newOrderForCreation(cmd.CustomerID, validItems))
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +95,14 @@ func (c createOrderHandler) Handler(ctx context.Context, cmd CreateOrder) (*Crea
 		return nil, err
 	}
 	return &CreateOrderResult{OrderID: o.ID}, nil
+}
+
+func newOrderForCreation(customerID string, items []*entity.Item) *domain.Order {
+	return &domain.Order{
+		CustomerID: customerID,
+		Status:     domain.StatusPending,
+		Items:      items,
+	}
 }
 
 func (c createOrderHandler) validate(ctx context.Context, items []*entity.ItemWithQuantity) ([]*entity.Item, error) {
