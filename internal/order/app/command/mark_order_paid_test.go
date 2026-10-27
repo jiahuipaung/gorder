@@ -2,14 +2,32 @@ package command
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/jiahuipaung/gorder/common/genproto/stockpb"
 	"github.com/jiahuipaung/gorder/common/metrics"
 	"github.com/jiahuipaung/gorder/order/adapters"
 	domain "github.com/jiahuipaung/gorder/order/domain/order"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
+
+type reservationVerifierStub struct {
+	status string
+	err    error
+}
+
+func (s reservationVerifierStub) GetReservation(_ context.Context, id, owner string) (*stockpb.ReservationResponse, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	state := s.status
+	if state == "" {
+		state = "CONFIRMED"
+	}
+	return &stockpb.ReservationResponse{ReservationId: id, CustomerId: owner, Status: state}, nil
+}
 
 func TestMarkOrderPaidHandlerTransitionsOnceAndTreatsReplayAsNoOp(t *testing.T) {
 	t.Parallel()
@@ -24,6 +42,7 @@ func TestMarkOrderPaidHandlerTransitionsOnceAndTreatsReplayAsNoOp(t *testing.T) 
 
 	handler := NewMarkOrderPaidHandler(
 		repo,
+		reservationVerifierStub{},
 		logrus.NewEntry(logrus.New()),
 		metrics.TodoMetrics{},
 	)
@@ -48,6 +67,7 @@ func TestMarkOrderPaidHandlerRejectsNilOrder(t *testing.T) {
 
 	handler := NewMarkOrderPaidHandler(
 		adapters.NewMemoryOrderRepository(),
+		reservationVerifierStub{},
 		logrus.NewEntry(logrus.New()),
 		metrics.TodoMetrics{},
 	)
@@ -69,6 +89,7 @@ func TestMarkOrderPaidHandlerRejectsNonPaidEventWithoutChangingOrder(t *testing.
 	require.NoError(t, err)
 	handler := NewMarkOrderPaidHandler(
 		repo,
+		reservationVerifierStub{},
 		logrus.NewEntry(logrus.New()),
 		metrics.TodoMetrics{},
 	)
@@ -86,4 +107,21 @@ func TestMarkOrderPaidHandlerRejectsNonPaidEventWithoutChangingOrder(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, domain.StatusWaitingForPayment, got.Status)
 	require.Empty(t, got.PaymentLink)
+}
+
+func TestMarkOrderPaidRequiresConfirmedReservation(t *testing.T) {
+	ctx := context.Background()
+	repo := adapters.NewMemoryOrderRepository()
+	o, err := repo.Create(ctx, &domain.Order{CustomerID: "customer", Status: domain.StatusWaitingForPayment})
+	require.NoError(t, err)
+	h := NewMarkOrderPaidHandler(repo, reservationVerifierStub{status: "RELEASED"}, logrus.NewEntry(logrus.New()), metrics.TodoMetrics{})
+	changed, err := h.Handler(ctx, MarkOrderPaid{Order: &domain.Order{ID: o.ID, CustomerID: "customer", Status: domain.StatusPaid}})
+	require.Error(t, err)
+	require.False(t, changed)
+	stored, err := repo.Get(ctx, o.ID, "customer")
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusWaitingForPayment, stored.Status)
+	h = NewMarkOrderPaidHandler(repo, reservationVerifierStub{err: errors.New("stock unavailable")}, logrus.NewEntry(logrus.New()), metrics.TodoMetrics{})
+	_, err = h.Handler(ctx, MarkOrderPaid{Order: &domain.Order{ID: o.ID, CustomerID: "customer", Status: domain.StatusPaid}})
+	require.Error(t, err)
 }

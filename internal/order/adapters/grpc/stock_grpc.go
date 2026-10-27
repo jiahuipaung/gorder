@@ -27,6 +27,14 @@ func (s StockGrpc) CheckIfItemsInStock(ctx context.Context, items []*orderpb.Ite
 	return resp, nil
 }
 
+func (s StockGrpc) Reserve(ctx context.Context, orderID, customerID string, items []*orderpb.ItemWithQuantity, expiresAtUnixMillis int64) (*stockpb.ReservationResponse, error) {
+	return s.client.Reserve(ctx, &stockpb.ReserveRequest{ReservationId: orderID, CustomerId: customerID, Items: items, ExpiresAtUnixMillis: expiresAtUnixMillis})
+}
+
+func (s StockGrpc) GetReservation(ctx context.Context, id, customer string) (*stockpb.ReservationResponse, error) {
+	return s.client.GetReservation(ctx, &stockpb.ReservationKey{ReservationId: id, CustomerId: customer})
+}
+
 func (s StockGrpc) GetItem(ctx context.Context, itemIDs []string) ([]*orderpb.Item, error) {
 	resp, err := s.client.GetItems(ctx, &stockpb.GetItemsRequest{
 		ItemIDs: itemIDs,

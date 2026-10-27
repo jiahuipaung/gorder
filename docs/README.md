@@ -17,8 +17,9 @@
 1. [系统架构总览](architecture/overview.md)；
 2. [核心业务流程](architecture/business-flow.md)；
 3. [数据所有权与状态模型](architecture/data-and-state.md)；
-4. [可靠性模型](architecture/reliability.md)；
-5. [架构演进路线](architecture/evolution.md)。
+4. [库存预占与支付边界](architecture/inventory-reservation.md)；
+5. [可靠性模型](architecture/reliability.md)；
+6. [架构演进路线](architecture/evolution.md)。
 
 这条路径覆盖服务拆分、同步与异步边界、状态机、消息至少一次投递、幂等、跨存储事务和
 故障恢复等常见追问。
@@ -29,7 +30,8 @@
 2. [支付消息重复投递实验](experiments/payment-redelivery.md)；
 3. [Consumer correctness 实验](experiments/consumer-correctness.md)；
 4. [显式订单迁移实验](experiments/explicit-order-transitions.md)；
-5. [证据与公开边界](project-evidence.md)。
+5. [隔离 MySQL/RabbitMQ 集成测试](architecture/inventory-reservation.md#verification)；
+6. [证据与公开边界](project-evidence.md)。
 
 其中 `make verify` 是当前持续验证路径；完整业务链路需要外部 Stripe test resources 和分别
 启动四个进程，属于探索性调试路径。
@@ -42,7 +44,8 @@
 | [核心业务流程](architecture/business-flow.md) | 从创建订单到支付、履约，代码实际经过哪些步骤？ |
 | [数据所有权与状态模型](architecture/data-and-state.md) | 哪个服务拥有哪类数据，订单状态如何迁移？ |
 | [可靠性模型](architecture/reliability.md) | 当前守住了哪些不变量，还存在哪些失败窗口？ |
-| [架构演进路线](architecture/evolution.md) | 怎样分阶段补齐 Inbox、Outbox、库存预占和对账？ |
+| [库存预占与支付边界](architecture/inventory-reservation.md) | 当前如何预占、确认，哪里仍需 Provider 对账？ |
+| [架构演进路线](architecture/evolution.md) | 怎样分阶段补齐 Inbox、Outbox、到期释放和对账？ |
 | [本地开发指南](development/local-development.md) | 怎样启动依赖、运行模块、验证和排障？ |
 | [证据与公开边界](project-evidence.md) | 哪些是源码事实、测试证据、缺口或方案？ |
 | [支付重投实验](experiments/payment-redelivery.md) | 怎样复现并验证支付消息重复投递下的幂等？ |

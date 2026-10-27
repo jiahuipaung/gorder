@@ -4,6 +4,8 @@ import (
 	"context"
 	"github.com/jiahuipaung/gorder/stock/entity"
 	"github.com/jiahuipaung/gorder/stock/infrastructure/persistent"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type MySQLStockRepository struct {
@@ -15,8 +17,7 @@ func NewMySQLStockRepository(db *persistent.MySQL) *MySQLStockRepository {
 }
 
 func (m MySQLStockRepository) GetItems(ctx context.Context, ids []string) ([]*entity.Item, error) {
-	//TODO implement me
-	panic("implement me")
+	return nil, status.Error(codes.Unimplemented, "catalog listing is not supported; use stock validation")
 }
 
 func (m MySQLStockRepository) GetStock(ctx context.Context, ids []string) ([]*entity.ItemWithQuantity, error) {

@@ -40,6 +40,7 @@ func (m *MemoryOrderRepository) Create(ctx context.Context, o *domain.Order) (*d
 		Status:      o.Status,
 		PaymentLink: o.PaymentLink,
 		Items:       o.Items,
+		ExpiresAt:   o.ExpiresAt,
 	}
 
 	m.store = append(m.store, newOrder)
@@ -61,6 +62,25 @@ func (m *MemoryOrderRepository) Get(ctx context.Context, id, customerID string) 
 		}
 	}
 	return nil, domain.NotFoundError{OrderID: id}
+}
+
+func (m *MemoryOrderRepository) RejectStock(_ context.Context, id, customerID string) error {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	for _, o := range m.store {
+		if o.ID != id || o.CustomerID != customerID {
+			continue
+		}
+		if o.Status == domain.StatusStockRejected {
+			return nil
+		}
+		if o.Status != domain.StatusPending {
+			return domain.InvalidStatusTransitionError{OrderID: id, CurrentStatus: o.Status, TargetStatus: domain.StatusStockRejected}
+		}
+		o.Status = domain.StatusStockRejected
+		return nil
+	}
+	return domain.NotFoundError{OrderID: id}
 }
 
 func (m *MemoryOrderRepository) AttachPaymentSession(
@@ -103,7 +123,7 @@ func (m *MemoryOrderRepository) MarkPaid(
 		if current.ID != orderID || current.CustomerID != customerID {
 			continue
 		}
-		if current.Status == domain.StatusPaid {
+		if current.Status == domain.StatusPaid || current.Status == domain.StatusReady {
 			return false, nil
 		}
 		if current.Status != domain.StatusWaitingForPayment {

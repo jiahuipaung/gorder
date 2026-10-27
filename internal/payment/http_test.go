@@ -30,6 +30,13 @@ type publisherStub struct {
 	calls []publishCall
 }
 
+type confirmerStub struct {
+	err   error
+	calls int
+}
+
+func (s *confirmerStub) Confirm(context.Context, string, string) error { s.calls++; return s.err }
+
 func (s *publisherStub) PublishWithContext(
 	_ context.Context,
 	exchange string,
@@ -101,20 +108,53 @@ func TestWebhookRejectsInvalidSignatureWithoutPublishing(t *testing.T) {
 	}
 }
 
-func serveSignedPaidWebhook(t *testing.T, publisher *publisherStub, validSignature bool) int {
+func TestPaidWebhookDoesNotPublishWithoutConfirmedStock(t *testing.T) {
+	publisher := &publisherStub{}
+	status := serveSignedPaidWebhook(t, publisher, true, errors.New("stock unavailable"))
+	if status != http.StatusServiceUnavailable || len(publisher.calls) != 0 {
+		t.Fatalf("status=%d publish=%d", status, len(publisher.calls))
+	}
+}
+
+func TestPaidWebhookRejectsMalformedItemsBeforeConfirmingStock(t *testing.T) {
+	publisher := &publisherStub{}
+	status, confirmer := serveSignedPaidWebhookWithItems(t, publisher, true, "not-json")
+	if status != http.StatusBadRequest || confirmer.calls != 0 || len(publisher.calls) != 0 {
+		t.Fatalf("status=%d confirms=%d publishes=%d", status, confirmer.calls, len(publisher.calls))
+	}
+}
+
+func TestPaidWebhookRejectsEmptyItemsBeforeConfirmingStock(t *testing.T) {
+	publisher := &publisherStub{}
+	status, confirmer := serveSignedPaidWebhookWithItems(t, publisher, true, "[]")
+	if status != http.StatusBadRequest || confirmer.calls != 0 || len(publisher.calls) != 0 {
+		t.Fatalf("status=%d confirms=%d publishes=%d", status, confirmer.calls, len(publisher.calls))
+	}
+}
+
+func serveSignedPaidWebhook(t *testing.T, publisher *publisherStub, validSignature bool, confirmError ...error) int {
 	t.Helper()
-
-	const secret = "whsec_consumer_correctness_test"
-	previousSecret := viper.Get("endpoint-stripe-secret")
-	viper.Set("endpoint-stripe-secret", secret)
-	t.Cleanup(func() {
-		viper.Set("endpoint-stripe-secret", previousSecret)
-	})
-
 	items, err := json.Marshal([]map[string]any{{"id": "item-1", "quantity": 2}})
 	if err != nil {
 		t.Fatalf("marshal items fixture: %v", err)
 	}
+	status, confirmer := serveSignedPaidWebhookWithItemsAndError(t, publisher, validSignature, string(items), confirmError...)
+	if validSignature && confirmer.calls != 1 {
+		t.Fatalf("expected one reservation confirmation, got %d", confirmer.calls)
+	}
+	return status
+}
+
+func serveSignedPaidWebhookWithItems(t *testing.T, publisher *publisherStub, validSignature bool, items string) (int, *confirmerStub) {
+	return serveSignedPaidWebhookWithItemsAndError(t, publisher, validSignature, items)
+}
+
+func serveSignedPaidWebhookWithItemsAndError(t *testing.T, publisher *publisherStub, validSignature bool, items string, confirmError ...error) (int, *confirmerStub) {
+	t.Helper()
+	const secret = "whsec_consumer_correctness_test"
+	previousSecret := viper.Get("endpoint-stripe-secret")
+	viper.Set("endpoint-stripe-secret", secret)
+	t.Cleanup(func() { viper.Set("endpoint-stripe-secret", previousSecret) })
 	payload, err := json.Marshal(map[string]any{
 		"id":          "evt_paid_1",
 		"object":      "event",
@@ -128,7 +168,7 @@ func serveSignedPaidWebhook(t *testing.T, publisher *publisherStub, validSignatu
 				"metadata": map[string]string{
 					"orderID":     "order-1",
 					"customerID":  "customer-1",
-					"items":       string(items),
+					"items":       items,
 					"paymentLink": "https://pay.example/session-1",
 				},
 			},
@@ -148,12 +188,15 @@ func serveSignedPaidWebhook(t *testing.T, publisher *publisherStub, validSignatu
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	NewPaymentHandler(publisher).RegisterRoutes(router)
+	confirmer := &confirmerStub{}
+	if len(confirmError) > 0 {
+		confirmer.err = confirmError[0]
+	}
+	NewPaymentHandler(publisher, confirmer).RegisterRoutes(router)
 	req := httptest.NewRequest(http.MethodPost, "/api/webhook", bytes.NewReader(payload))
 	req.Header.Set("Stripe-Signature", signature)
 	recorder := httptest.NewRecorder()
 
 	router.ServeHTTP(recorder, req)
-
-	return recorder.Code
+	return recorder.Code, confirmer
 }

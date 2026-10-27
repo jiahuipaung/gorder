@@ -31,7 +31,7 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 | Order、Stock、Payment、Kitchen 服务骨架 | 当前实现 | 源码位于 `internal/` 下的独立 Go module；不代表所有接口均已完成 |
 | HTTP、gRPC、RabbitMQ 混合协作 | 当前实现 | API、client/server adapter 和 consumer 可定位；完整外部依赖链路未纳入默认验证 |
 | 订单保存于 MongoDB | 当前实现 | Order Mongo repository 负责创建、读取和状态更新 |
-| 库存数量读取自 MySQL | 当前实现 | Stock repository 实现 `GetStock`；`GetItems` 仍未实现 |
+| 可用库存与预占记录存于 MySQL | 当前实现 | Stock repository 读取 `o_stock`；`GetItems` RPC 显式返回 Unimplemented |
 | 支付链接创建与 Stripe webhook 验签 | 当前实现 | Stripe adapter 与 webhook handler 已存在；离线测试使用 stripe-go 真实签名生成器，真实 Provider 集成不属于默认验证 |
 | `pending -> waiting_for_payment -> paid -> ready` 显式状态模型 | 已验证行为 | 三条 repository 条件更新、应用命令与 gRPC 端口测试覆盖首次迁移、重放与错误分类 |
 | 跨服务任意订单快照更新已移除 | 已验证行为 | protobuf、Payment/Kitchen adapter 与 Order repository 只暴露意图明确的写命令 |
@@ -47,10 +47,12 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 | webhook publish 失败返回 HTTP 503 | 已验证行为 | [webhook 测试](../internal/payment/http_test.go)覆盖合法 signed paid event、publish error 和 invalid signature |
 | RabbitMQ 重试计数和 DLQ 路径 | 当前实现 | broker helper 使用 `x-retry-count` 并在达到上限后发布到 DLQ；尚无端到端 Broker 故障测试 |
 | 库存可用性检查 | 当前实现 | 比较请求数量与 MySQL 当前数量，并取得支付 Price ID |
-| 库存预占、确认、释放 | 已知缺口 | 当前 Stock 流程不扣减、不预占，也没有超时回收 |
+| 库存预占、确认、释放 | 已验证行为 | MySQL 事务、同键重放、末件竞争、回滚和终态竞争见[集成测试](../internal/stock/reservation/store_integration_test.go)；无自动到期释放 |
+| 下单待处理意图恢复 | 已验证行为 | Mongo 意图由 Order 后台扫描重试；离线[恢复测试](../internal/order/service/recovery_test.go)覆盖暂时失败，真实 Mongo 崩溃点未验证 |
+| 已支付库存确认门禁 | 已验证行为 | 签名 webhook 先确认 Stock，再发布事件；Order 核验 `CONFIRMED` 后标记 paid；[离线状态链](../internal/order/app/command/commerce_flow_test.go)覆盖 |
 | 通用持久化 Inbox | 已知缺口 | 事件没有统一稳定身份和消费去重表 |
 | Transactional Outbox | 已知缺口 | 订单落库与发布 `order.create` 仍是两个独立操作 |
-| RabbitMQ publisher confirms | 已知缺口 | consumer retry 与 webhook 只检查 publish 调用返回值，未等待 Broker confirm |
+| RabbitMQ publisher confirms | 已验证行为 | confirmed publisher 与 mandatory 路由检查；[隔离 RabbitMQ 测试](../internal/common/broker/rabbitmq_integration_test.go)覆盖 Broker 接收，不证明与业务库原子提交 |
 | Kitchen 履约副作用幂等 | 已知缺口 | delivery 终态已修复，但 `cook` 没有持久化履约记录或 Inbox |
 | 自动对账与补偿 | 已知缺口 | 未实现订单、支付、库存之间的周期性核对与修复 |
 | 完整业务服务一键启动 | 已知缺口 | Compose 当前只编排基础设施，业务进程需要分别启动 |
@@ -72,7 +74,7 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 > 在此基础上，跨服务通用 `UpdateOrder` 已收口为显式命令，Order 用条件更新保护
 > `pending -> waiting_for_payment -> paid -> ready`，Stripe Checkout 重投以订单 ID 作为幂等键。
 
-也可以进一步说明：项目主动保留了 Outbox、持久化 Inbox、库存预占和对账作为演进项，并在
+也可以进一步说明：项目主动保留了 Outbox、持久化 Inbox、到期安全释放和对账作为演进项，并在
 文档中分析它们分别解决哪个失败窗口。
 
 ## 不能当作现状宣称的内容
@@ -82,7 +84,7 @@ GOrder 是对订单、库存、支付和履约问题的个人脱敏重建。仓�
 - 不能说已经实现完整 Saga、分布式事务或 exactly-once delivery；
 - 不能说已经通过 Outbox 消除了订单落库与发消息的双写问题；
 - 不能说已经通过 Inbox 对所有消息完成去重；
-- 不能说库存已经预占、扣减、回滚或超时释放；
+- 可以说 MySQL 可用库存已原子预占并支持确认/释放；不能说已自动超时释放或已完成支付对账；
 - 不能把 Redis 描述为当前业务正确性的最终边界；
 - 不能把 consumer 单一确认终态描述为 exactly-once、消息零丢失或履约副作用幂等；
 - 不能说 `docker compose up` 会启动全部业务服务。

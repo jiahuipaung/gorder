@@ -44,7 +44,7 @@ func newCheckoutSessionParams(order *orderpb.Order) *stripe.CheckoutSessionParam
 			Quantity: stripe.Int64(int64(item.Quantity)),
 		})
 	}
-	marshalledItems, _ := json.Marshal(items)
+	marshalledItems, _ := json.Marshal(order.Items)
 	metadata := map[string]string{
 		"orderID":     order.ID,
 		"customerID":  order.CustomerID,

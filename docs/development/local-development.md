@@ -239,7 +239,7 @@ curl 'http://127.0.0.1:8282/api/customer/customer-demo/orders/ORDER_ID'
 | RabbitMQ UI | 查看 `order.create`、`order.paid`、`order_dlq` | queue/exchange、consumer 和积压情况 |
 | Jaeger UI | 按服务名查询 | 已导出的 HTTP/gRPC trace；不证明全部消息 trace 完整 |
 | Mongo Express | 查看 `order.order` | 订单文档当前值 |
-| MySQL | 查询 `gorder_v2.o_stock` | 当前库存行；不代表预占或扣减 |
+| MySQL | 查询 `gorder_v2.o_stock` 与 reservation 表 | `o_stock.quantity` 是可用数量；预占会扣减，确认不再扣减 |
 | `make verify` | 查看退出码和各 module 输出 | 离线代码验证结果，不证明外部链路可用 |
 
 当前没有统一 `/healthz` 或 `/readyz` endpoint，也没有应用 metrics endpoint。判断完整链路是否
@@ -275,7 +275,7 @@ curl 'http://127.0.0.1:8282/api/customer/customer-demo/orders/ORDER_ID'
 - Product ID 必须属于同一个 test account，并拥有 default Price；
 - webhook signature 失败会返回 HTTP 400；
 - webhook body 超过 64 KiB 或无法读取会返回错误；
-- RabbitMQ publish 返回 error 时 webhook 返回 HTTP 503；当前仍没有 publisher confirms、
+- RabbitMQ publish 未获 Broker confirm 时 webhook 返回 HTTP 503；当前仍没有
   Payment event ledger 或 Outbox，边界记录在[可靠性模型](../architecture/reliability.md)。
 
 ### RabbitMQ 消息没有推进流程
@@ -283,13 +283,14 @@ curl 'http://127.0.0.1:8282/api/customer/customer-demo/orders/ORDER_ID'
 - 检查 exchange/queue 是否存在，以及 consumer 数量；
 - 检查 `order_dlq` 和 `x-retry-count`；
 - 区分 producer 没发布、消息积压、consumer 失败和业务状态拒绝；
-- 当前没有 publisher confirms、Outbox 或自动 DLQ replay，不能只根据 API 返回推断消息已可靠
-  处理。
+- 当前有 publisher confirms，但没有 Outbox 或自动 DLQ replay；不能只根据 API 返回推断
+  消息已被业务消费者处理。
 
 ### `internal/order/tests/TestCreateOrder_success` 失败
 
-该历史测试请求真实本地 HTTP 地址，不属于默认离线验证。先使用 `make verify` 验证当前承诺；
-若目标是调试端到端链路，再按本页顺序启动依赖和服务。
+该历史 smoke test 请求真实本地 HTTP 地址和 Stripe test 商品，已用 `live` build tag
+从默认离线验证中隔离。先使用 `make verify` 验证当前承诺；若目标是调试端到端链路，
+再按本页顺序启动依赖和服务，执行 `cd internal/order && go test -tags live ./tests`。
 
 ## 10. 修改后的提交前检查
 

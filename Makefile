@@ -29,5 +29,4 @@ verify-modules:
 
 .PHONY: verify-order-reliability
 verify-order-reliability:
-	cd internal/order && go test -count=1 -race \
-		./adapters ./app/command ./domain/order ./infrastructure/consumer ./ports
+	cd internal/order && go test -count=1 -race ./...

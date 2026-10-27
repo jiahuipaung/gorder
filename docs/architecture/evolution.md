@@ -2,8 +2,9 @@
 
 [返回文档地图](../README.md) · [可靠性模型](reliability.md)
 
-本文记录从当前实现继续演进的路线。**P0 Consumer correctness 与显式订单迁移基础切片已实现
-并有离线测试；P1-P3、完整 P4 及 P5-P6 仍是演进方案。** 路线按“先关闭已知失败窗口，
+本文记录从当前实现继续演进的路线。**P0、显式订单迁移、Broker confirmed publish 与 P3
+库存预占核心切片已实现；P1 Inbox、P2 Outbox、P3 到期对账、完整 P4 及 P5-P6 仍是演进方案。**
+路线按“先关闭已知失败窗口，
 再增加系统复杂度”的顺序
 组织，不以堆叠中间件为目标。每个后续阶段必须同时交付实现、故障测试和可观测证据，才
 可以更新[能力矩阵](../project-evidence.md)。
@@ -23,10 +24,10 @@
 ```mermaid
 flowchart LR
     P0[P0 控制流与错误传播] --> P05[P0.5 显式订单迁移]
-    P05 --> P1[P1 稳定事件契约 + Inbox]
+    P05 --> P3[P3 库存预占核心已实现]
+    P3 --> P1[P1 稳定事件契约 + Inbox]
     P1 --> P2[P2 Outbox 消除 DB/MQ 双写]
-    P2 --> P3[P3 库存预占状态机]
-    P3 --> P4[P4 订单流程编排与补偿]
+    P2 --> P4[P4 订单流程编排与补偿]
     P4 --> P5[P5 对账与自动修复]
     P5 --> P6[P6 故障注入与 SLO 证据]
 ```
@@ -61,8 +62,7 @@ flowchart LR
 ### 不解决什么
 
 P0 只让错误语义可预测，仍不能消除 DB/MQ 双写，也不能防止 Stripe Checkout 或 Kitchen
-副作用重复。由于没有 publisher confirms，publish 调用返回 nil 也不是 Broker 已持久化的
-端到端证明。
+副作用重复。后续已加入 publisher confirms，但它也不是跨数据库的原子提交证明。
 
 ### 当前验收证据
 
@@ -87,8 +87,8 @@ P0 只让错误语义可预测，仍不能消除 DB/MQ 双写，也不能防止 
 
 ### 不解决什么
 
-该切片只约束 Order 写模型。它没有提供事件身份、Inbox/Outbox、库存预占或 Kitchen 副作用
-去重。Stripe 幂等键也不是本地支付记录与对账机制。
+该切片只约束 Order 写模型。后续已加入库存预占，但事件身份、Inbox/Outbox、Kitchen 副作用
+去重仍未完成。Stripe 幂等键也不是本地支付记录与对账机制。
 
 复现步骤见[显式订单迁移实验](../experiments/explicit-order-transitions.md)。
 
@@ -197,11 +197,12 @@ Outbox 解决“不能漏发”，不提供 exactly-once；P1 Inbox 和业务幂
 - 重复发布具有同一 `event_id`，consumer 只提交一次业务效果；
 - Outbox backlog、最老待发布年龄、attempt count 有指标和告警。
 
-## 7. P3：库存预占、确认与释放
+## 7. P3：库存预占、确认与释放（核心已实现）
 
 ### 要解决的问题
 
-当前 check-only 不能阻止两个订单同时看到同一份库存，也无法处理支付超时和取消。
+单纯 check-only 不能阻止两个订单同时看到同一份库存；现已在 MySQL 中加入原子预占。
+支付超时和取消仍需 Provider 结果核查后才能安全释放。
 
 ### 建议状态模型
 
@@ -209,33 +210,30 @@ Outbox 解决“不能漏发”，不提供 exactly-once；P1 Inbox 和业务幂
 stateDiagram-v2
     [*] --> Reserved: Reserve(order_id, items, expires_at)
     Reserved --> Confirmed: payment succeeded
-    Reserved --> Released: payment expired / cancelled
-    Reserved --> Released: reservation timeout
+    Reserved --> Released: verified unpaid / cancellation
     Confirmed --> [*]
     Released --> [*]
 ```
 
 MySQL 中建议区分：
 
-- `stock_balance(product_id, on_hand, reserved, version)`；
-- `stock_reservation(order_id, product_id, quantity, status, expires_at)`；
-- 唯一键 `(order_id, product_id)` 使 Reserve/Confirm/Release 可重入。
+- 现有 `o_stock.quantity` 表示可用量，Reserve 条件扣减；
+- 预占主表绑定订单 ID、客户、商品摘要和到期时间，明细表保存 SKU/数量；
+- 唯一 SKU 约束和订单 ID 主键支持竞争控制与重放。
 
-Reserve 在一个 MySQL transaction 中执行条件更新：只有
-`on_hand - reserved >= requested` 才增加 `reserved` 并插入 reservation。Confirm 将 reserved
-转为最终扣减，Release 只减少 reserved。每个命令都根据 reservation 当前状态决定“首次
-变化、成功 no-op、非法迁移”。
+Reserve 在一个 MySQL transaction 中扣减 `o_stock.quantity` 并写入预占；Confirm 只修改
+状态，Release 恢复可用量一次。每个命令区分首次变化、成功 no-op 和非法迁移。
 
 ### 与支付流程的关系
 
-建议顺序：
+当前顺序与剩余工作：
 
 1. 创建订单意图；
 2. Stock 预占成功；
 3. 创建支付会话并进入 `waiting_for_payment`；
 4. 支付成功后确认库存；
-5. 支付创建失败、支付过期或订单取消时释放；
-6. 定时任务回收超过 `expires_at` 且仍为 Reserved 的记录。
+5. 支付创建失败、支付过期或订单取消后的 Provider 核查与安全释放仍未实现；
+6. `Due` 仅列出到期候选，不自动回收。不能按本地时钟直接释放可能已支付的预占。
 
 ### 不解决什么
 
@@ -247,7 +245,7 @@ Reserve 在一个 MySQL transaction 中执行条件更新：只有
 - 并发 Reserve 总量永远不超过可用库存；
 - 同一订单重复 Reserve/Confirm/Release 不重复改变数量；
 - Confirm 与 Release 竞争时只有一个合法终态；
-- crash 后超时任务可以恢复并释放遗留 reservation；
+- crash 后待发布订单意图可重试；到期释放必须等 Provider 对账；
 - 属性测试持续检查 `on_hand >= 0`、`reserved >= 0` 和 reservation 汇总一致性。
 
 ## 8. P4：完整订单流程与补偿
@@ -340,7 +338,8 @@ engine。只有在超时、等待、人工节点和分支数量显著增加时�
 2. **Reliable payment event**：完成 Provider event ledger、Payment Outbox、Order Inbox，并加入
    webhook crash-point test；
 3. **Reliable order creation**：完成 Order Outbox 和 publisher worker；
-4. **Inventory reservation**：完成 MySQL reservation state machine 与并发测试。
+4. **Inventory reservation（已完成核心）**：MySQL reservation state machine 与并发测试；
+   后续补 Provider 对账后的到期释放。
 
 P4-P6 可以先以文档和实验接口保留，只有前三个可靠性切片稳定后再扩展。这样既能展示技术
 思考，也避免把一个作品仓库做成无法验证的“大而全平台”。

@@ -15,6 +15,8 @@ import (
 const (
 	DLX                = "order_dlx"
 	DLQ                = "order_dlq"
+	OrderPaidQueue     = "order.paid.order"
+	KitchenPaidQueue   = "order.paid.kitchen"
 	amqpRetryHeaderKey = "x-retry-count"
 )
 
@@ -32,18 +34,31 @@ func Connect(user, password, host, port string) (*amqp.Channel, func() error) {
 	if err != nil {
 		logrus.Fatalf("failed to open a channel: %s", err)
 	}
-	err = ch.ExchangeDeclare(EventOrderCreate, "direct", true, false, false, false, nil)
-	if err != nil {
-		logrus.Fatalf("failed to declare EventOrderCreate: %s", err)
-	}
-	err = ch.ExchangeDeclare(EventOrderPaid, "fanout", true, false, false, false, nil)
-	if err != nil {
-		logrus.Fatalf("failed to declare EventOrderPaid: %s", err)
-	}
-	if err = createDLX(ch); err != nil {
-		logrus.Fatalf("failed to create DLX: %s", err)
+	if err = DeclareTopology(ch); err != nil {
+		logrus.Fatalf("failed to declare message topology: %s", err)
 	}
 	return ch, conn.Close
+}
+
+// Declare every durable subscription before any publisher can accept a payment.
+func DeclareTopology(ch *amqp.Channel) error {
+	if err := ch.ExchangeDeclare(EventOrderCreate, "direct", true, false, false, false, nil); err != nil {
+		return err
+	}
+	if err := ch.ExchangeDeclare(EventOrderPaid, "fanout", true, false, false, false, nil); err != nil {
+		return err
+	}
+	for _, name := range []string{EventOrderCreate, OrderPaidQueue, KitchenPaidQueue} {
+		if _, err := ch.QueueDeclare(name, true, false, false, false, nil); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{OrderPaidQueue, KitchenPaidQueue} {
+		if err := ch.QueueBind(name, "", EventOrderPaid, false, nil); err != nil {
+			return err
+		}
+	}
+	return createDLX(ch)
 }
 
 func createDLX(ch *amqp.Channel) error {
@@ -66,7 +81,14 @@ func createDLX(ch *amqp.Channel) error {
 	return nil
 }
 
-func HandleRetry(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery) error {
+func HandleRetryToQueue(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery, queue string) error {
+	if queue == "" {
+		return fmt.Errorf("retry queue is required")
+	}
+	publisher, err := ConfirmedPublisherFor(ch)
+	if err != nil {
+		return err
+	}
 	if d.Headers == nil {
 		d.Headers = amqp.Table{}
 	}
@@ -79,7 +101,7 @@ func HandleRetry(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery) error 
 
 	if retryCount > maxRetryCount {
 		logrus.Infof("moving message %s to dlq", d.MessageId)
-		return ch.PublishWithContext(ctx, "", DLQ, false, false, amqp.Publishing{
+		return publisher.PublishWithContext(ctx, "", DLQ, true, false, amqp.Publishing{
 			Headers:      d.Headers,
 			ContentType:  "application/json",
 			Body:         d.Body,
@@ -87,8 +109,14 @@ func HandleRetry(ctx context.Context, ch *amqp.Channel, d *amqp.Delivery) error 
 		})
 	}
 	logrus.Infof("retrying message %s, count=%d", d.MessageId, retryCount)
-	time.Sleep(time.Duration(retryCount) * time.Second)
-	return ch.PublishWithContext(ctx, d.Exchange, d.RoutingKey, false, false, amqp.Publishing{
+	timer := time.NewTimer(time.Duration(retryCount) * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+	}
+	return publisher.PublishWithContext(ctx, "", queue, true, false, amqp.Publishing{
 		Headers:      d.Headers,
 		ContentType:  "application/json",
 		Body:         d.Body,

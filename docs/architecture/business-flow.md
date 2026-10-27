@@ -12,19 +12,21 @@
 ```mermaid
 flowchart LR
     A[Client 创建订单] --> B[Order 查询 Stock]
-    B --> C[Order 写 MongoDB]
-    C -->|order.create| D[Payment 创建 Stripe Checkout]
+    B --> C[Order 写 MongoDB 意图]
+    C --> R[Stock 原子预占]
+    R -->|order.create| D[Payment 创建 Stripe Checkout]
     D --> E[Payment 经 gRPC 挂接支付会话]
     E --> F[Client 在 Stripe 完成支付]
     F --> G[Payment 验证 webhook]
-    G -->|order.paid| H[Order 原子标记 paid]
+    G --> S[Stock 确认预占]
+    S -->|order.paid| H[Order 核验库存并标记 paid]
     G -->|同一 fanout event| I[Kitchen 模拟履约]
     I --> J[Kitchen 经 gRPC 写入 ready]
 ```
 
 这条链路没有跨 MongoDB、MySQL、RabbitMQ 与 Stripe 的全局事务。Order 当前用条件更新约束
-`pending -> waiting_for_payment -> paid -> ready`，精确重放成为 no-op；消息发布、库存和履约
-副作用等跨系统失败窗口仍需显式处理。
+`pending -> waiting_for_payment -> paid -> ready`，明确缺货时进入 `stock_rejected`。
+库存预占与订单写入仍是跨系统步骤，履约副作用也没有持久去重记录。
 
 ## 2. 创建订单
 
@@ -53,7 +55,10 @@ sequenceDiagram
     Stock-->>OrderApp: validated items
     OrderApp->>Mongo: InsertOne(order)
     Mongo-->>OrderApp: ObjectID
-    OrderApp->>MQ: persistent order.create
+    OrderApp->>Stock: Reserve(order_id, items, expiry)
+    Stock->>MySQL: 单事务扣减可用库存并保存预占
+    Stock-->>OrderApp: RESERVED
+    OrderApp->>MQ: confirmed persistent order.create
     OrderApp-->>OrderHTTP: order_id
     OrderHTTP-->>Client: order_id + local success URL
 ```
@@ -66,16 +71,16 @@ sequenceDiagram
 4. Stock 从 MySQL 读取当前数量，逐项比较请求数量；
 5. Stock 再从 Stripe Product API 获取默认 Price ID，返回用于支付的商品快照；
 6. Order 以 `pending` 初始状态插入 MongoDB，使用 MongoDB ObjectID 的十六进制字符串作为公开订单 ID；
-7. Order 将完整订单 JSON 作为持久化 `order.create` 消息发布到同名队列；
-8. HTTP 返回订单 ID 和本地成功页 URL。
+7. Order 以该 ID 调用 Stock `Reserve`；多 SKU 在同一 MySQL 事务中预占；
+8. Order 将完整订单 JSON 作为持久化 `order.create` 消息发布到同名队列，等待 Broker confirm；
+9. HTTP 返回订单 ID 和本地成功页 URL。暂时性下游错误时也会返回待恢复的订单 ID。
 
 ### 2.2 当前语义边界
 
-- Stock 的“有库存”只表示检查时的当前数量足够，不会锁定或扣减数量；
+- 初次检查只做前置校验；最终以 MySQL 原子 Reserve 判定可用库存，失败不会部分扣减；
 - 新插入订单显式处于 `pending`，只有挂接非空支付链接后才能进入 `waiting_for_payment`；
-- Stock 获取某个商品 Price ID 失败时会记录 warning 并跳过该商品，当前不会让整个检查立即失败；
-- OpenAPI 路径包含 `customer_id`，创建 handler 实际使用 request body 中的 `customer_id`，当前没有
-  对两个来源做一致性校验。
+- Stock 获取任一 Price ID 失败时会让整个订单校验失败，不返回部分商品；
+- HTTP 创建入口要求路径和请求体中的 `customer_id` 一致。
 
 ### 2.3 失败窗口
 
@@ -83,11 +88,11 @@ sequenceDiagram
 |---|---|---|
 | Stock/MySQL/Stripe 调用失败 | 创建订单返回错误 | 没有订单落库；客户端可重试，但没有请求幂等键 |
 | MongoDB 写入失败 | 不发布消息，创建失败 | 结果清晰 |
-| MongoDB 写入成功，`order.create` 发布失败 | API 返回错误，但订单已经存在 | 客户端重试可能创建第二笔订单；原订单不会自动进入支付流程 |
+| MongoDB 写入成功，预占/发布暂时失败 | 返回仍为 `pending` 的订单 ID；后台以同一 ID 重试 | 客户端若丢失响应并重试，仍可能创建第二笔订单 |
 | 消息发布成功，响应返回前进程退出 | 客户端可能认为失败 | 重试可能创建重复订单；没有创建请求去重记录 |
 
-核心问题是 MongoDB 插入和 RabbitMQ 发布是两个独立操作。当前没有 Transactional Outbox，
-因此“订单已保存”和“支付流程一定会启动”不是一个原子承诺。
+MongoDB 插入、MySQL Reserve 和 RabbitMQ 发布仍是独立操作；后台扫描未到期、未发布的
+持久意图提供有限恢复，不等于 Transactional Outbox。到期订单不会自动释放，需先核查支付。
 
 ## 3. 创建支付链接
 
@@ -144,9 +149,8 @@ Payment consumer 已把每条 delivery 收敛为一个显式终态：
 - command 失败且 retry/DLQ publish 失败：`Nack(requeue=true)`，保留原 delivery。
 
 `CreatePayment` 对 nil order 立即返回错误，Stripe error 与 Order gRPC error 都会继续返回给
-consumer，不再把“支付会话已创建但订单链接回写失败”误报为成功。单元测试覆盖上述分支，
-但 retry publish 尚未启用 publisher confirms，因此 helper 返回 nil 仍不等于已经获得 Broker
-持久化确认。
+consumer，不再把“支付会话已创建但订单链接回写失败”误报为成功。重试交接使用 Broker
+confirm 与 mandatory 路由检查；这仍不替代业务库与消息的原子提交。
 
 ### 3.3 其他失败窗口
 
@@ -229,9 +233,9 @@ status = waiting_for_payment
 |---|---|---|
 | Stripe event ID | 未写入 `order.paid` 消息，也没有持久化 Inbox | 只能依赖状态迁移吸收这一种重复副作用，不能审计每个 Provider event |
 | RabbitMQ publish 返回错误 | webhook 返回 HTTP 503 | 允许 Stripe 按 Provider 策略重试；但没有本地 event ledger/Outbox，恢复仍依赖外部重试 |
-| RabbitMQ publish 返回 nil 但消息未被 Broker 持久化 | 当前没有 publisher confirms | webhook 返回 HTTP 200 后仍存在不可证明的丢失窗口 |
+| Broker 已确认消息但业务库更新未原子提交 | 当前没有 Outbox/Provider event ledger | 跨系统仍需对账；confirm 只证明 Broker 接收 |
 | metadata `paymentLink` | 来自创建会话前的订单快照 | 空值不会再覆盖本地链接；非空旧快照仍可能回退较新的链接，P1 应从事件契约移除该权威 |
-| metadata 商品 JSON | 序列化的是 Stripe line item params，再反序列化为 order protobuf item | 字段模型不完全对应，履约消息中的商品信息可能不完整 |
+| metadata 商品 JSON | 当前序列化订单商品快照，再还原为 order protobuf item | 大订单受 Stripe metadata 大小限制；无 Provider event ledger |
 | 其他 Stripe event type / 未 paid session | 返回 HTTP 200，不发布业务事件 | 这是当前筛选策略，不是完整支付状态机 |
 
 ## 5. 模拟履约
@@ -286,9 +290,9 @@ Kitchen 是演示性的履约 worker，不代表真实仓储、发货或制作�
 | 同一支付消息重投不会重复改变订单终态 | 已支付时成功 no-op | 已验证 |
 | 支付事件不能更新另一客户的同 ID 订单 | `_id + customer_id` 条件 | 已验证 |
 | Payment、Order、Kitchen 一次 delivery 只 ACK 或 NACK | 显式分支与错误路径立即返回 | 已验证 |
-| 创建订单后一定启动支付 | 无对应机制 | 不成立：存在 DB/MQ 双写窗口 |
-| 有库存检查成功后一定能履约 | 无预占或扣减 | 不成立 |
-| Provider 已支付一定反映到订单 | publish error 返回 503，但无本地 ledger/Outbox/对账且无 confirms | 仍不成立 |
+| 创建订单后一定启动支付 | 到期前扫描持久意图并重试 | 非原子承诺；到期和响应丢失仍需处理 |
+| 库存并发不会重复卖出同一件 | MySQL 原子 Reserve | 已覆盖最后一件并发测试；不保证完整支付履约 |
+| Provider 已支付一定反映到订单 | Confirm 后发布失败返回 503 | 无本地 ledger/Outbox/对账，仍不成立 |
 | 履约副作用只执行一次 | 无履约 Inbox/记录 | 不成立 |
 
 这些不变量和失败窗口会在[可靠性模型](reliability.md)中进一步按“机制—证据—剩余风险”
